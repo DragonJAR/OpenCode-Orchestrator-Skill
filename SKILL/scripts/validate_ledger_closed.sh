@@ -146,6 +146,7 @@ function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
     return (rel == "") ? wsn : normp(wsn "/" rel)
   }
   if (q == ".." || substr(q, 1, 3) == "../") return "!OUTSIDE!" p
+  if (winmode) gsub(/\\/, "/", q)
   return q
 }
 function scalar(raw,   s, n, i, c, nx, out) {
