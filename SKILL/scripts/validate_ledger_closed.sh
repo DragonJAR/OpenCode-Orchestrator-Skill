@@ -92,11 +92,9 @@ function is_abs(p) { return substr(p, 1, 1) == "/" || is_drive(p) || is_unc(p) }
 # Collapse ".", ".." and repeated separators; Windows forms use "/" and an upper-case drive.
 function normp(p,   root, rest, n, parts, i, m, out, k, res, abs) {
   root = ""; rest = p; abs = 0
-  if (is_drive(p)) { root = toupper(substr(p, 1, 1)) ":/"; rest = substr(p, 3); abs = 1 }
-  else if (is_unc(p)) { root = "//"; rest = substr(p, 3); abs = 1 }
+  if (is_drive(p)) { root = toupper(substr(p, 1, 1)) ":/"; rest = substr(p, 3); gsub(/\\/, "/", rest); abs = 1 }
+  else if (is_unc(p)) { root = "//"; rest = substr(p, 3); gsub(/\\/, "/", rest); abs = 1 }
   else if (substr(p, 1, 1) == "/") { root = "/"; abs = 1 }
-  gsub(/\\/, "/", rest)
-  if (!abs) gsub(/\\/, "/", rest)
   n = split(rest, parts, "/"); m = 0
   for (i = 1; i <= n; i++) {
     if (parts[i] == "" || parts[i] == ".") continue

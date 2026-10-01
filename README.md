@@ -233,7 +233,7 @@ The skill is designed to activate on clear multi-agent orchestration intent and 
 | **R2** | **Background Capability** | Use background mode only if confirmed by active tool schema or `/openapi.json`. |
 | **R3** | **Two Levels Only** | Orchestrator creates root workers; workers spawn at least 2 subagents. No third tier. |
 | **R4** | **Effective Permissions** | Honor permission policies. If an `ask` rule blocks execution, await orchestrator reply. |
-| **R5** | **Daughter Policy** | Subagent inherits configured policies; verify nesting capabilities in active runtime. |
+| **R5** | **Daughter Policy** | Subagent uses its own configured policy; only session-specific rules inherit at creation. Verify the effective policy in the active runtime. |
 | **R6** | **Explicit Context** | Every prompt must carry task identity, exact directory, boundaries, and measurable criteria. |
 | **R7** | **Destructive Actions** | Explicit human confirmation required before deleting any session or data. |
 | **R8** | **Continue vs. Fork** | Continuing preserves `sessionID`; forking creates a new branch. Never mix them. |

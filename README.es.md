@@ -232,7 +232,7 @@ La skill está calibrada para activarse con intenciones claras de orquestación 
 | **R2** | **Capacidad Background** | Úsalo solo si el esquema activo de la herramienta o `/openapi.json` lo confirman. |
 | **R3** | **Dos Niveles Estrictos** | El orquestador crea workers raíz; cada worker crea al menos 2 subagentes. Sin tercer nivel. |
 | **R4** | **Permisos Efectivos** | Respeta las políticas. Si una regla `ask` detiene la ejecución, espera respuesta vía API. |
-| **R5** | **Política de la Hija** | El subagente hereda configuraciones; verifica capacidades en el runtime activo. |
+| **R5** | **Política de la Hija** | El subagente usa su propia política configurada; solo las reglas específicas de sesión se heredan al crearla. Verifica la política efectiva en el runtime activo. |
 | **R6** | **Contexto Explícito** | Cada prompt debe transferir identidad, directorio exacto, límites y criterios medibles. |
 | **R7** | **Acciones Destructivas** | Confirmación explícita del usuario requerida antes de borrar cualquier sesión. |
 | **R8** | **Continuar vs. Bifurcar**| Continuar preserva `sessionID`; bifurcar (`fork`) crea una rama nueva. No los confundas. |
