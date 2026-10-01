@@ -1,0 +1,72 @@
+# Evidencia versionada de OpenCode V2
+
+**Corte documental:** 2026-09-30 — revalidación de las páginas V2 actuales y contraste con el código del tag `v2.0.19`; no se ejecutó ni consultó una instancia real. La referencia HTTP V2 y sus rutas de sesión están marcadas experimentales. **Para operar prevalece el `/openapi.json` activo**: este archivo es un registro de evidencia y auditoría (histórico, no un contrato vivo). Ver [versionado y fechas](#versionado-y-fechas).
+
+## Versionado y fechas
+
+Fuente única de versión y fecha para toda la skill; los demás documentos enlazan aquí.
+
+- **Versión objetivo:** OpenCode V2 (serie 2.0.x). La skill no exige una versión exacta: el `/openapi.json` y el catálogo de la instancia activa prevalecen.
+- **Fecha del snapshot documental:** 2026-09-30. Todas las menciones "corte" de este archivo se refieren a esa fecha.
+- **Etiquetas de código citadas:** `v2.0.19` para `subagent`, sesiones, permisos y compaction (afirmaciones a.*, b.*, c.*, d.5, d.6, e.1b, e.3, f.*, x.4, x.5); `v2.0.21` para el almacenamiento y la configuración de tabs de la TUI ([recipe-tui-tabs.md](recipe-tui-tabs.md)), para la herencia de location de las hijas (fila e.1c), para `outcome`/`time.idle` y el mensaje `idle` (fila e.5) y para el comando `opencode api` (fila e.6). Que lo observado en `v2.0.19` siga vigente en `v2.0.21` requiere verificación; trátalo como observación del tag.
+- **Nota histórica de publicación:** en la consulta del registro npm de `@opencode/cli` del 2026-09-29T21:05:55Z, `dist-tags.latest` era `2.0.20`, y GitHub Releases aún listaba la serie V1 `v1.18.33`. Son datos de publicación fechados, no una afirmación sobre la versión más reciente actual.
+- **Ruta del esquema:** `/openapi.json` (verificado en el código del tag `v2.0.21`: `packages/server/src/routes.ts` declara `openapiPath: "/openapi.json"` y `packages/cli/src/commands/handlers/api.ts` lo consume). `/doc` es la ruta de la generación V1 (presente en `packages/opencode/src/server/server.ts` del tag `v1.0.0`) y no debe usarse en V2. Verificación del 2026-10-01 contra el repositorio upstream; no se consultó una instancia real.
+- Los ejemplos de `created_at`/`last_state_at` del ledger usan fechas ilustrativas y no representan una versión.
+
+## Identidad y publicación
+
+OpenCode 2 es la generación mayor de `anomalyco/opencode`, con documentación bajo `/v2/docs` y referencia API OpenAPI 3.1.0. «V2» nombra la generación del producto, no una versión de API. El código aquí citado proviene de los tags descritos arriba.
+
+## Afirmaciones y estado de verificación
+
+| # | Afirmación | Fuente | Estado |
+| --- | --- | --- | --- |
+| a.1 | Herramienta nativa `subagent`; requeridos `agent`/`description`/`prompt` | Docs actuales `tools/` + esquema de entrada de `subagent.ts` + renombres `migrate-v1/` | Docs actuales + tag, corte 2026-09-30 |
+| a.2 | Opcionales `model`/`sessionID`/`background` en el schema de herramienta observado | `subagent.ts` v2.0.19; revalidar forma exacta contra tools de la instancia | Observación del tag; no esquema vigente garantizado |
+| a.3 | El tag devuelve `{ sessionID, status: completed\|running, output }`; errores se propagan como fallo de herramienta | `subagent.ts:50-54` | Observación del tag; no esquema garantizado por docs actuales |
+| b.1 | `background:true` retorna inmediatamente y notifica al padre al acabar; la forma exacta de salida `running` viene del tag | Docs `tools/` + `subagent.ts:19-23,44-46` | Docs actuales + observación del tag |
+| b.2 | El código nativo indica no dormir, sondear ni duplicar mientras se espera aviso | `subagent.ts:22-23,44-46` | Instrucción del tag v2.0.19 |
+| c.1 | Profundidad de anidamiento por defecto 1 | Docs `tools/` + `subagent.ts:129` | Docs actuales + tag, corte 2026-09-30 |
+| c.2 | `experimental.subagent_depth` cambia el límite en el código auditado | `subagent.ts:130-132` | Observación experimental del tag; verificar configuración/versión activa |
+| d.1 | Reglas `{action,resource,effect}`; gana la última coincidencia | Docs V2 actuales `permissions/`, formato y coincidencia | Docs actuales, corte 2026-09-30 |
+| d.2 | Sin coincidencia → `ask` | Docs V2 actuales `permissions/`, sección de reglas | Docs actuales, corte 2026-09-30 |
+| d.3 | Aprobación `always` no invalida un `deny` configurado | Docs V2 actuales `permissions/`, sección Approvals | Docs actuales, corte 2026-09-30 |
+| d.4 | Permiso `subagent` autoriza lanzar, no las herramientas del hijo | Docs V2 actuales `agents/` + `permissions/` | Docs actuales, corte 2026-09-30 |
+| d.5 | En v2.0.19, `Session.create` hereda reglas de sesión del padre si no se pasan explícitamente; el evaluador combina reglas del agente y de sesión en ese orden | `session.ts` + `permission.ts`; las docs actuales dicen que el hijo usa su propia configuración | Observación del tag, no promesa de herencia vigente; inspeccionar la instancia |
+| d.6 | `/agents` enumera `all` como primario o subagent; `/tools` dice solo agentes de modo `subagent`; el código v2.0.19 acepta `all` al rechazar solo `primary` | Docs `agents/`, `tools/` + `subagent.ts` | Discrepancia documental; no presentar `all` como capacidad vigente garantizada |
+| d.7 | Política base de agentes incluye `*/* allow` con excepciones para rutas externas y lecturas `.env`; no infieras que acciones omitidas quedan en `ask` | Docs V2 actuales `agents/` + `permissions/` | Docs actuales, corte 2026-09-30 |
+| e.1 | Rutas HTTP de sesión y permisos documentadas bajo una superficie experimental; `POST /api/session` acepta schema/location, no expone `parentID` ni lanza subagent nativo | `api/` (OpenAPI 3.1.0) + `tools/` | Docs actuales; usar solo si las publica el `/openapi.json` activo |
+| e.1a | `GET .../inbox` lista trabajo durable aún no entregado; `GET .../message` devuelve historial proyectado paginado; el ID de prompt no tiene garantía documentada de deduplicación | `api/` (`session.inbox.list`, `session.message.list`, `session.prompt`) | Docs actuales; reconciliar ambas vistas antes de reintentar |
+| e.1b | El flujo subagent de v2.0.19 crea con `parentID` y hereda la `location` del padre; HTTP create usa `location` explícita y no expone `parentID` | `subagent.ts` + `session.ts`; API `session.create` | Observación del tag frente a schema HTTP actual |
+| e.1c | En `v2.0.21`, `subagent.ts` crea la hija con `sessions.create({ parentID, title, agent, model })` sin argumento de ubicación (`packages/core/src/tool/plugin/subagent.ts:188-193`); el tipo de entrada de `Session.create` es la unión `{ location; parentID?: never } \| { parentID; location?: never }` (`packages/core/src/session.ts:90-91`) y calcula `location = parent?.location ?? input.location`, con error si faltan ambos (`session.ts:254-258`); una hija existente reutilizada se rechaza si su `parentID` no es la sesión actual (`subagent.ts:164`). Consecuencia: el `/openapi.json` HTTP no describe la herramienta `subagent`, así que la herencia no puede «confirmarse» ahí; la regla efectiva es comprobar `GET /api/session/{childID}` (`parentID`, `location.directory`) | Código del tag `v2.0.21`, consultado el 2026-10-01 (`gh api`, sin instancia real) | Observación del tag; no garantiza otras versiones. Regla operativa: [subagent-contract.md](subagent-contract.md#regla-única-de-ubicación-de-hijas) |
+| e.2 | `context` = mensajes posteriores a la última compaction | API V2 actual `session.context` + docs `compaction/` | Docs actuales, corte 2026-09-30 |
+| e.3 | Docs: `auto=true`, `keep.tokens=15000`, `buffer=10%`; implementación v2.0.19 aplica piso de 16,000 al buffer con contextos ≥32,000 | Docs `compaction/` + `session/compaction.ts` | Docs actuales + observación del tag |
+| e.4 | `session.compact` admite `delivery: steer|queue` y `id`; 200 es admisión, `session.compaction.*` señala fin y el reintento exacto con el mismo ID es idempotente | API `session.compact` + docs actuales `compaction/` | Hecho documentado específico de compactación; no es garantía de idempotencia de prompts |
+| e.5 | `Session.Info.outcome` (`succeeded\|failed\|interrupted`, «outcome of the last completed execution, recorded at `time.idle`») y `time.idle` existen en `packages/schema/src/session.ts:43-48`; el marcador `Session.Message.Idle` (`type: "idle"`, con `outcome`) en `packages/schema/src/session-message.ts:284-293`. El mensaje assistant no tiene `outcome`. La referencia HTTP lista `type` como filtro de `GET …/message` sin incluir `idle` en su enum | Tag `v2.0.21` + API V2 actual | Esquema del tag y docs; el filtro `type=idle` requiere verificación en el `/openapi.json` activo |
+| e.6 | Rutas documentadas y usadas por la skill: `GET /api/agent`, `/api/model`, `GET /api/session?parentID=`, `GET /api/session/{id}`, `GET /api/session/active`, `POST /api/session/{id}/interrupt`, `POST /api/experimental/session/{id}/wait`, `GET /api/permission/request`, `GET\|POST /api/session/{id}/permission…` y `…/permission/{requestID}/reply`. `opencode api <MÉTODO> <RUTA> [-d\|--data] [-H\|--header] [--param k=v]` (`packages/cli/src/commands/commands.ts:100-115`, `handlers/api.ts`) | API V2 actual (consulta del 2026-10-01) + tag `v2.0.21` | Docs actuales, superficie experimental; valores de `decision` (`Permission.Reply`), forma de `GET /api/session/active` y activación de la ruta `experimental` sin documentar |
+| f.1 | La ruta documentada `DELETE /api/session/{id}` borra también las hijas | API `session.remove` + `session.ts:355-364` | Docs de ruta experimental; cascade observado también en tag |
+| f.2 | `fork` crea sesión nueva con historial proyectado (`before`) | API V2 actual `session.fork` | Ruta de sesión experimental |
+| f.3 | Continuar = reusar `sessionID`; v2.0.19 valida `parentID` directo | `subagent.ts:154-164,40-42` | Observación del tag, no garantía de HTTP API |
+| x.1 | `/api/event` es stream experimental y volátil por contrato; no es log durable | API V2 actual `event.subscribe` | Docs actuales, corte 2026-09-30 |
+| x.2 | Log durable experimental `/api/experimental/session/{id}/log` (`after`/`follow`) | API V2 actual `session.log` | Docs actuales; ruta experimental |
+| x.3 | Renombres V1→V2 (`task`→`subagent`, `bash`→`shell`, etc.) | Docs V2 actuales `migrate-v1/`, sección de cambios | Docs actuales, corte 2026-09-30 |
+| x.4 | Export HTTP experimental; CLI `--continue`/`--session`/`--fork` según docs CLI del tag | API y CLI V2 del tag `v2.0.19` | Histórico; validar flags con CLI/help de la instalación, no con `/openapi.json` HTTP |
+| x.5 | `subagent` `completed/running`, snapshot `idle/busy/retry` y eventos `session.execution.*` aparecen en v2.0.19; el schema actual expone `Session.Message.Idle.outcome = succeeded|failed|interrupted` y `Session.Message.Assistant.retry` | `subagent.ts` + `session/execution.ts`; API `Session.Message.Idle` y `Session.Message.Assistant` | Separar observación del tag de outcome y metadata de mensaje descritos por docs actuales; no llamar públicos a esos eventos ni equiparar ambos `retry` (definición en [api-and-sessions.md](api-and-sessions.md#campo-retry-del-mensaje-assistant)) |
+| x.6 | `pending`/`verified`/`blocked`/`failed`/`awaiting-approval` son convenciones del ledger local (lista autoritativa en [ledger-template.md](ledger-template.md)), no estados nativos de API | Diseño del orquestador | Convención local |
+
+## Matiz d.5 resuelto
+
+Las docs vivas dicen que el hijo usa su propia configuración de permisos; el comportamiento detallado de abajo es solo código de `v2.0.19`, no garantía de releases actuales. En ese tag, la sesión hija copia reglas de sesión del padre si no se pasa `permissions`; el evaluador combina reglas del agente y luego de sesión, con última coincidencia ganadora. Un `deny` efectivo no se levanta con `always` y corta antes del hook; `permission.evaluate` solo puede ajustar el resultado si la evaluación alcanza el hook. Inspecciona siempre la política efectiva de la instancia.
+
+## URLs exactas consultadas
+
+- Docs V2 actuales: [agents/](https://opencode.ai/v2/docs/agents/), [permissions/](https://opencode.ai/v2/docs/permissions/), [tools/](https://opencode.ai/v2/docs/tools/), [api/](https://opencode.ai/v2/docs/api/), [compaction/](https://opencode.ai/v2/docs/compaction/), [cli/](https://opencode.ai/v2/docs/cli/), [cli/config/](https://opencode.ai/v2/docs/cli/config/), [migrate-v1/](https://opencode.ai/v2/docs/migrate-v1/), [build/plugins/](https://opencode.ai/v2/docs/build/plugins/)
+- Código `v2.0.19`: [subagent.ts](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/tool/plugin/subagent.ts), [session.ts](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/session.ts), [execution.ts](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/session/execution.ts), [permission.ts](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/permission.ts), [compaction.ts](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/session/compaction.ts)
+- Identidad: [tag v2.0.19](https://github.com/anomalyco/opencode/tree/v2.0.19), [tags](https://github.com/anomalyco/opencode/tags), [releases](https://github.com/anomalyco/opencode/releases), [registro npm @opencode/cli](https://registry.npmjs.org/%40opencode%2fcli) (dist-tag consultado con timestamp arriba)
+
+## Capas de evidencia
+
+- **Docs V2 actuales:** hechos que figuran en las páginas enlazadas, incluida la etiqueta experimental de la API; solo el `/openapi.json` del servidor activo es referencia operativa.
+- **Observación de código:** comportamiento comprobado únicamente en el tag `v2.0.19`; no implica que una versión posterior conserve el mismo contrato.
+- **Inferencia o convención local:** las reglas del orquestador/ledger se identifican como tales y no como estados o garantías nativas.
+- **No inferir:** compatibilidad estable de rutas HTTP experimentales, deduplicación general o por prompt message ID (la excepción es el reintento exacto de compaction con el mismo ID), concurrencia máxima o locks de archivos del servidor, validez vigente del modo `all`, equivalencia entre tab y `sessionID`, ni herencia completa de permisos entre padre e hijo.

@@ -1,0 +1,20 @@
+# Ignore everything by default (safeguard against accidental leaks)
+/*
+
+# Whitelist allowed repository root files & public skill package
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/README.es.md
+!/SKILL/
+!/SKILL/**
+
+# Operating system & temporary files
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo
+**/*~
+**/*.tmp
+**/.idea/**
+**/.vscode/**

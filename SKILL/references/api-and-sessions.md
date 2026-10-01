@@ -1,0 +1,101 @@
+# API y sesiones de OpenCode V2
+
+**Corte documental:** 2026-09-30 (ver [versionado y fechas](research-evidence.md#versionado-y-fechas)). La referencia V2 denomina experimental a la superficie HTTP; las rutas de sesión también están marcadas experimentales. Antes de cada uso, confirma el endpoint, versión y esquema publicados por `/openapi.json` en la instancia activa (ver [Descubrimiento del contrato](#descubrimiento-del-contrato)). «V2» nombra la generación del producto, no una promesa de estabilidad de la API. Nada aquí autoriza acceso a una instancia no autorizada. [API V2](https://opencode.ai/v2/docs/api/)
+
+Este paquete coordina dos niveles: el orquestador crea sesiones raíz `worker_session`; cada worker usa la herramienta nativa `subagent` para coordinar al menos dos sesiones hijas distintas, integrar sus resultados y reportar al orquestador. La API HTTP de sesiones y la herramienta `subagent` son mecanismos distintos; crear una sesión HTTP no invoca `subagent`. El contrato de `subagent` está en [subagent-contract.md](subagent-contract.md), y el esquema único del ledger en [ledger-template.md](ledger-template.md).
+
+## Descubrimiento del contrato
+
+El esquema vivo de la instancia es `GET {endpoint}/openapi.json` (OpenAPI 3.1, con la misma autenticación que el resto de la API). Evidencia: en el tag `v2.0.21` del repositorio upstream, `packages/server/src/routes.ts` declara `openapiPath: "/openapi.json"` y el comando `opencode api` (`packages/cli/src/commands/handlers/api.ts`) lee ese mismo documento; la ruta `/doc` pertenece a la generación V1 (ver [research-evidence.md](research-evidence.md#versionado-y-fechas)). Si dispones de la CLI, `opencode api` consulta ese esquema por operación (`requiere verificación` de sus flags con `--help` de la instalación).
+
+- **Guard:** una respuesta que sea HTML, que no sea JSON o que no declare `openapi`/`paths` **no es un esquema válido** (rutas desconocidas pueden caer en la UI web y devolver HTTP 200 con HTML). Trátala como "esquema no verificable" y aplica el Modo degradado.
+- **Precedencia:** el esquema de la instancia prevalece sobre esta skill. No uses `/doc` ni otra ruta para descubrir el contrato salvo que la instancia la publique.
+
+## Transporte de las llamadas
+
+- **Vía preferida:** `opencode api <MÉTODO> <RUTA> [--data '<json>'] [--param clave=valor] [--header nombre:valor]` (también acepta un `operationId` de `/openapi.json`). Resuelve el servidor y la autenticación por ti, imprime el cuerpo de la respuesta y, si el HTTP no es 2xx, escribe `HTTP <estado>` en stderr y sale con código 1. Fuente: `packages/cli/src/commands/commands.ts:100-115` y `handlers/api.ts` del tag `v2.0.21`; `--server`/`--standalone` y cualquier otro flag de tu instalación: `requiere verificación` con `opencode api --help`. La RUTA puede llevar query (`/api/session?parentID=ses_…`).
+- **`curl` u otro cliente HTTP directo:** requiere la credencial del servicio activo; no busques secretos por tu cuenta. La única excepción acotada es la de [recipe-tui-tabs.md](recipe-tui-tabs.md#autenticación-http-directa-solo-si-hace-falta); si no aplica, usa `opencode api` o bloquea la llamada (R1).
+- **Comillas en Windows:** el ejemplo `--data '<json>'` usa comillas simples POSIX; en cmd.exe o PowerShell se rompen. Ejecuta la llamada desde Git Bash/WSL o escapa las comillas dobles del JSON según el shell, y valida con `GET` antes del `POST`.
+- **Sesión propia y misma instancia:** si la shell expone `OPENCODE_SESSION_ID` (variable observada en el código v2.0.21; requiere verificación en tu instalación), úsala como `run.root_session.sessionID` y comprueba que `GET /api/session/$OPENCODE_SESSION_ID` responde 200 contra el mismo servidor que usarás; si no, detente (instancia equivocada).
+- No registres credenciales ni encabezados de autenticación en el ledger, logs ni prompts.
+
+## Sesión worker raíz: crear y abrir tab son acciones distintas
+
+1. **Preflight:** confirma autorización, instancia mediante `GET /api/info`, versión y `/openapi.json` activo. Obtén la ubicación canónica de `GET /api/location` y de la sesión del orquestador. Las rutas HTTP de sesión son experimentales; invócalas solo si el `/openapi.json` activo las publica. [API V2](https://opencode.ai/v2/docs/api/)
+2. **Crear sesión:** el schema de `POST /api/session` admite `location`, y la ubicación debe ser `run.location.directory` literalmente. Aunque el schema público deje `agent` y `model` como opcionales, la política de esta skill requiere resolverlos de los catálogos activos de la instancia y enviarlos explícitamente: usa el ID exacto de un agente disponible y el par exacto `model.id`/`model.providerID`; incluye `variant` solo si el catálogo activo lo publica y la tarea lo requiere. Consulta los catálogos `GET /api/agent` y `GET /api/model` (o los equivalentes que publique el `/openapi.json` activo); no fijes `build` como valor supuesto ni inventes modelo, proveedor o variante. Si no hay valores exactos válidos o no puedes confirmarlos antes de crear la sesión, bloquea el flujo antes de `POST /api/session`. El cuerpo ilustrativo completo está en [recipe-tui-tabs.md](recipe-tui-tabs.md). El API no documenta `parentID` en el cuerpo de creación. Guarda `response.data.id` como `sessionID` y comprueba en `Session.Info` que `parentID` sea `null` y que `location.directory` sea idéntico al directorio canónico del run; no envíes `parentID` para imitar una sesión de GUI. [Create session, API V2](https://opencode.ai/v2/docs/api/)
+3. **Abrir tab (solo si el usuario pidió tabs):** crear por HTTP no abre una tab de TUI. En la TUI documentada, `/sessions` o `Ctrl+X`, `L` permite volver a una sesión existente; las tabs pueden estar desactivadas por configuración. La documentación de la interfaz de plugins también define `context.ui.tabs.open(sessionID)`, `context.ui.tabs.list()` y `context.ui.tabs.focus(sessionID)`. Usa solo el control de cliente que ya esté disponible y autorizado; este paquete no instala ni proporciona código de plugin. [TUI V2](https://opencode.ai/v2/docs/cli/tui/), [CLI plugin API: tabs](https://opencode.ai/v2/docs/build/plugins/cli/), [configuración de tabs](https://opencode.ai/v2/docs/cli/config)
+4. **Verificar la tab (solo si el usuario pidió tabs):** confirma que la tab visible corresponde al mismo `sessionID` registrado, usando `context.ui.tabs.list()` si esa interfaz está disponible. La API HTTP no enumera tabs. Si el cliente no permite verificar la identidad de la tab, registra la sesión como no verificada y bloquea la afirmación de que se abrió; no inventes deep links. La opción `tabs.mode` puede ser `auto`, `on` u `off`. El método local privado sujeto a versión se describe en [recipe-tui-tabs.md](recipe-tui-tabs.md). [CLI plugin API: tabs](https://opencode.ai/v2/docs/build/plugins/cli/), [configuración de tabs](https://opencode.ai/v2/docs/cli/config)
+5. **Ejecución del worker (handshake opcional):** primero confirma en el `/openapi.json` activo que la misma instancia publica tanto una ruta de envío como una capacidad de lectura para la sesión worker; si no, no envíes trabajo y conserva el estado como bloqueado/desconocido. En la ruta por defecto el handshake con nonce es **opcional** (R3a): úsalo solo si necesitas confirmar el canal de ida y vuelta (envía un desafío breve con un nonce único, pide responder solo con él y valida `sessionID` y nonce exactos). Solo es obligatorio en la receta de tabs, donde se exige para comprobar que la tab corresponde a la sesión ([recipe-tui-tabs.md](recipe-tui-tabs.md)). El worker debe usar el agente y la herramienta nativa `subagent` que anuncie su instancia. Al finalizar, el orquestador lee el resultado integrado desde la misma sesión worker con el [procedimiento de lectura acotada](#lectura-acotada-del-resultado) y verifica resultado y evidencia; no presupongas mensajería directa entre sesiones raíz. Una tab abierta o un envío aceptado no prueban que el worker respondió. Si no puedes leer y verificar su resultado, no declares éxito.
+
+Si la integración autorizada usa el estado local privado de la TUI para abrir tabs, sigue la receta versionada y sus condiciones de concurrencia en [recipe-tui-tabs.md](recipe-tui-tabs.md); no trates ese archivo como API pública.
+
+La ubicación vive en el entorno del servidor OpenCode. Para Windows, Linux y macOS reutiliza literalmente el `location.directory` canónico servido por la misma instancia; no construyas rutas con convenciones del equipo cliente, no conviertas separadores y no asumas que un directorio local del cliente existe en el servidor. Si orquestador y worker usan distintas instancias o ubicaciones, detente. [API V2: location y session](https://opencode.ai/v2/docs/api/)
+
+## Ruta base de envío y lectura del resultado
+
+Ruta por defecto, solo si el `/openapi.json` activo la publica (si difiere, usa la publicada y registra la diferencia):
+
+1. **Enviar:** `POST /api/session/{sessionID}/prompt` con `text` (requerido) y solo los campos opcionales que publique `/openapi.json`. El envío no es idempotente: no lo repitas sin reconciliar.
+2. **Leer:** `GET /api/session/{sessionID}/message` devuelve el historial proyectado y paginado de esa sesión. Si `/openapi.json` publica `GET /api/session/{sessionID}/inbox`, úsalo para ver trabajo durable aún no entregado y reconcilia ambas vistas antes de reintentar.
+3. **Verificar:** determina la terminación con la [lectura acotada](#lectura-acotada-del-resultado) (`Session.Info.outcome`/`time.idle` o el mensaje `idle`; el `outcome` no vive en el mensaje assistant), lee el informe del worker en los mensajes posteriores al envío y contrasta artefactos y evidencia con el `criterion`. La forma de la respuesta, la paginación y el modo de ligar un prompt con su respuesta requieren verificación en el `/openapi.json` activo.
+
+Si el `/openapi.json` no publica ambas rutas (envío y lectura) para la misma sesión, aplica el Modo degradado de [SKILL.md](../SKILL.md#modo-degradado).
+
+## Lectura acotada del resultado
+
+El marcador terminal de una ejecución es el mensaje `type: "idle"`, que lleva `outcome` (`succeeded`, `failed` o `interrupted`); `Session.Info` expone el mismo `outcome` (el de la última ejecución completada) y `time.idle` (instante en que se registró). Un mensaje assistant **no** tiene `outcome`. Los números son **valores por defecto**, ajustables según la tarea.
+
+1. **Antes de enviar:** lee `GET /api/session/{sessionID}` y guarda el `time.idle` y el `outcome` previos (pueden faltar), el instante del envío y el `messageID` más reciente (`before_messageID`).
+2. **Esperar:** tras un envío aceptado, repite a intervalo fijo (por defecto 10 s) `GET /api/session/{sessionID}`, con plazo por defecto de 10 min y hasta 3 ventanas (ver reglas de reconciliación). La ejecución terminó cuando `time.idle` existe y es posterior al previo guardado; entonces `outcome` es el de esta ejecución. Un `outcome` presente sin `time.idle` nuevo pertenece a un turno anterior y no sirve. Alternativa por mensajes: `GET /api/session/{sessionID}/message?type=idle&order=desc&limit=1`; la ruta documenta los parámetros `type`, `order`, `limit` y `cursor`, pero el enum de `type` que muestra la referencia no lista `idle` (`requiere verificación` en el `/openapi.json` activo); si no lo admite, lee `?order=desc&limit=N` sin filtro y busca el mensaje `idle` posterior a `before_messageID`.
+3. **En cada iteración** aplica las [reglas de reconciliación de la espera](#reglas-de-reconciliación-de-la-espera): permisos pendientes, plazo y re-armado.
+4. **Atajo opcional:** `POST /api/experimental/session/{sessionID}/wait` («wait for a session agent loop to become idle», responde 204 sin cuerpo) solo si el `/openapi.json` activo la publica; su plazo no está documentado, así que acótalo con tu propio plazo y lee `outcome` después con el paso 2. Si hay una notificación de finalización documentada, úsala en lugar de sondear. Un flujo de eventos solo puede usarse si el esquema lo lista (`requiere verificación`).
+5. Si vence el plazo sin `time.idle` nuevo: no relances el envío (R9, R10); reconcilia según las reglas siguientes.
+
+## Reglas de reconciliación de la espera
+
+- **(a) Hijas confirmadas por el orquestador (R14):** al terminar o al vencer el plazo, lista `GET /api/session?parentID=<sessionID del worker>` (también admite `limit`, `order`, `directory`, `project`, `subpath`, `cursor`) y compara con las filas `subagent`. Nunca cuentes un ID que figure solo en el reporte del worker; comprueba por cada hija `GET /api/session/{childID}` (`parentID`, `location.directory`, `outcome`). Una hija listada que no esté en el ledger es un hallazgo: no la cuentes y repórtala.
+- **(b) Permisos pendientes:** un worker por HTTP no tiene un humano en la sesión; una regla `ask` lo deja bloqueado. En cada iteración consulta `GET /api/session/{id}/permission` del worker y de cada hija activa (o `GET /api/permission/request`, que lista las pendientes por location). Si hay una pendiente, el estado local pasa a `awaiting-approval` (conserva slot y scope), no es un timeout: escala al usuario con el recurso y la acción exactos (R4); solo se responde con `POST /api/session/{id}/permission/{requestID}/reply` (`decision`, `message`; valores de `decision` según `Permission.Reply`, `requiere verificación`) siguiendo la decisión explícita del usuario o una autorización previa que cubra exactamente esa solicitud. Nunca autoapruebes por conveniencia.
+- **(c) Plazo re-armable:** los 10 min son un plazo por defecto. Al vencer, comprueba si el worker sigue en ejecución (`GET /api/session/active`: las sesiones ausentes están inactivas; o `Session.Info` sin `time.idle` nuevo). Si sigue activo, re-arma otra ventana de 10 min hasta un tope (por defecto 3 ventanas, 30 min en total, ajustable con el usuario). Agotado el tope, o si no puedes determinar si sigue activo, marca `outcome-unknown`, conserva slot y scope y reconcilia (mensajes, `inbox` si se publica, artefactos). `POST /api/session/{id}/interrupt` interrumpe la ejecución (`interrupted: false` si ya estaba idle); no lo uses como recuperación automática y registra el efecto.
+
+## API HTTP experimental
+
+La lista siguiente orienta la lectura, pero no sustituye el esquema vivo. Confirma ruta, método, argumentos y respuestas en `/openapi.json`; la referencia V2 marca experimental esta superficie y las rutas de sesión. [API V2](https://opencode.ai/v2/docs/api/)
+
+| Operación publicada | Uso limitado | Precaución |
+| --- | --- | --- |
+| `GET /api/info`, `GET /api/location` | Identidad del servidor y ubicación | No acreditan por sí solos que una tab esté abierta |
+| `GET /api/agent`, `GET /api/agent/{agentID}`, `GET /api/model`, `GET /api/model/default` | Catálogos para resolver `agent` y `model` exactos (aceptan `location`) | Usa los IDs literales; `model/default` puede devolver `null` |
+| `POST /api/session` | Crear una sesión con `location` explícita | No abre una tab ni inicia la herramienta `subagent`; reconcilia antes de repetir |
+| `GET /api/session`, `GET /api/session/{sessionID}` | Buscar/leer sesiones; `?parentID=` lista las hijas directas | Verifica el ID exacto y `Session.Info.location`/`parentID`/`outcome`/`time.idle` |
+| `GET /api/session/active` | Sesiones con una ejecución en curso en ese proceso; las ausentes están inactivas | La forma de `data` no está documentada |
+| `POST /api/session/{sessionID}/interrupt` | Interrumpir la ejecución (`resume=true\|false`) | Tiene efecto; ver [reglas de espera](#reglas-de-reconciliación-de-la-espera) |
+| `POST /api/experimental/session/{sessionID}/wait` | Esperar a que el bucle quede idle (204) | Experimental; plazo no documentado; el mecanismo de activación `requiere verificación` |
+| Rutas de mensaje de una sesión | Enviar o leer conversación según el contrato activo | Efecto no idempotente al enviar; no inventes rutas ni payloads |
+| `GET /api/permission/request`, `GET /api/session/{sessionID}/permission`, `GET …/permission/{requestID}`, `POST …/permission/{requestID}/reply` | Consultar y responder aprobaciones | Respeta la decisión humana y el alcance exacto |
+| `DELETE /api/session/{sessionID}` | Eliminar una sesión | La documentación dice que borra también sesiones hijas; acción destructiva que requiere autorización exacta |
+
+El schema de creación enumera `id`, `title`, `agent`, `model`, `location`, `metadata` y `permissions` como campos opcionales del cuerpo; esa opcionalidad del API no cambia la política de esta skill de enviar `agent` y `model` explícitos desde los catálogos activos. La referencia de sesión no ofrece un parámetro para convertir una sesión creada por HTTP en tab TUI ni para invocar la herramienta nativa `subagent`. [API V2](https://opencode.ai/v2/docs/api/)
+
+## Identidad, jerarquía y ledger
+
+El registro `worker_session` del orquestador es raíz: `parent_task_id: null`, `parentID: null`, `task_kind: worker_session`. Cada hijo nativo es `task_kind: subagent`, `parent_task_id` igual al `task_id` del worker y `parentID` igual al `sessionID` real del worker. Comprueba `sessionID`, `parentID` y `location.directory` por separado; la tab solo presenta una sesión. El DAG expresa orden de ejecución, no propiedad. Los nombres, tipos, estados, fechas y evidencia se mantienen en la [plantilla del ledger](ledger-template.md); no dupliques su esquema aquí.
+
+Un worker puede estar `verified` solo con el gate de [ledger-template.md](ledger-template.md#gate-de-worker-verificado). El orquestador lee el informe integrado de la sesión worker mediante una capacidad de lectura confirmada por el `/openapi.json` de la instancia; no presupongas mensajería directa entre sesiones raíz ni que una tab implica notificación o respuesta. Si no existe ese canal comprobado, deja el resultado desconocido y escala.
+
+Sobre la concurrencia (`run.max_sessions_in_flight`, sin valor por defecto), aplica la regla única de [ledger-template.md](ledger-template.md#límite-opcional-max_sessions_in_flight). Los estados terminales y locales se concilian según el `/openapi.json` activo y el ledger.
+
+## Campo `retry` del mensaje assistant
+
+`Session.Message.Assistant.retry` es un dato opcional de metadata de un mensaje assistant en el schema actual publicado por `/openapi.json`; su forma exacta requiere verificación en la instancia activa. No es el estado de runtime `retry` observado en el snapshot `v2.0.19` (`idle`/`busy`/`retry`) ni equivale al outcome terminal del mensaje idle (`Session.Message.Idle.outcome`: `succeeded`, `failed` o `interrupted`). No los trates como un único estado de ejecución. [API V2](https://opencode.ai/v2/docs/api/)
+
+## Snapshot histórico
+
+Los detalles del código etiquetado `v2.0.19` (retorno `completed`/`running` de `subagent`, herencia de permisos, piso de buffer de compaction, flags CLI) no son contrato público actual y viven en [research-evidence.md](research-evidence.md) (filas a.3, d.5, e.3, x.4 y x.5). No los extrapoles a otra versión.
+
+## Fuentes primarias
+
+- [API HTTP V2](https://opencode.ai/v2/docs/api/) — rutas, schemas, location y carácter experimental.
+- [TUI V2](https://opencode.ai/v2/docs/cli/tui/) — sesiones existentes y navegación de tabs.
+- [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/) — métodos de tabs documentados para un host de plugins existente.
+- [Configuración CLI](https://opencode.ai/v2/docs/cli/config) — `tabs.mode` y otras opciones de presentación.
+- [Agentes V2](https://opencode.ai/v2/docs/agents) y [Tools V2](https://opencode.ai/v2/docs/tools/) — agentes, permisos y herramienta nativa `subagent`.
