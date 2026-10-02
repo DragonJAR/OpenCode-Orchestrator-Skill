@@ -1,10 +1,10 @@
-# Ledger canónico de ejecución
+# Canonical execution ledger
 
-El ledger es la fuente local durable para identidad, propiedad, dependencias, scopes, concurrencia y reconciliación. No lo persiste el runtime. El modelo tiene dos niveles: sesiones worker de primer nivel y subagents hijos de un worker. Las dependencias DAG ordenan ejecución; nunca expresan propiedad.
+The ledger is the durable local source of truth for identity, ownership, dependencies, scopes, concurrency, and reconciliation. The runtime does not persist it. The model has two levels: first-level worker sessions and subagent children of a worker. DAG dependencies order execution; they never express ownership.
 
-## Esquema único
+## Single schema
 
-La raíz es siempre un mapa con `schema_version`, `run` y `tasks` como lista. No uses una lista en la raíz ni pongas tareas directamente en el mapa raíz. El bloque vacío y el poblado usan la misma forma.
+The root is always a map with `schema_version`, `run`, and `tasks` as a list. Do not use a list at the root or put tasks directly in the root map. The empty block and the populated one use the same shape.
 
 ~~~~yaml
 schema_version: 3
@@ -16,7 +16,7 @@ run:
     version: "version-from-api-info"
   location:
     directory: "/workspace/from-api-location"
-    # directory_client: "/ruta/visible/para/el/validador"   # opcional; ver la viñeta de location
+    # directory_client: "/path/visible/to/the/validator"   # optional; see the location bullet
     projectID: null
     subpath: null
   root_session:
@@ -27,82 +27,82 @@ run:
     active_tab_hint: "optional-ui-hint"
   min_subagents_per_worker: 2
 
-## Bloque opcional `run.client`
+## Optional `run.client` block
 
-Los validadores aceptan (y la navaja `attach-tabs` escribe) un bloque opcional `run.client` con dos campos:
+The validators accept (and the `attach-tabs` helper writes) an optional `run.client` block with two fields:
 
-- `tabs_scope`: `"global"` o `"current-client"`; determina si la tab se publica en `tabs.json` global o bajo la clave cwd del TUI.
-- `active_tab_hint`: string libre para que el TUI muestre una pestaña activa (no usado por los validadores).
+- `tabs_scope`: `"global"` or `"current-client"`; determines whether the tab is published in the global `tabs.json` or under the TUI's cwd key.
+- `active_tab_hint`: free-form string for the TUI to display an active tab (not used by the validators).
 
-Cuando este bloque aparece, el validador acepta las claves `tabs_scope` y `active_tab_hint` y rechaza cualquier otra clave bajo `client`. Si está ausente, los validadores no lo exigen. La documentación canónica del mecanismo de tabs está en `recipe-tui-tabs.md`.
+When this block appears, the validator accepts the keys `tabs_scope` and `active_tab_hint` and rejects any other key under `client`. If absent, the validators do not require it. The canonical documentation of the tabs mechanism is in `recipe-tui-tabs.md`.
 tasks: []
 ~~~~
 
-- `mode` es una convención del ledger: `shared-default`, `explicit-server` o `standalone`. Registra lo observado (`shared-default` por defecto en cliente local); la semántica de los flags de la CLI (`--server`, `--standalone`) requiere verificación con la ayuda de tu instalación ([api-and-sessions.md](api-and-sessions.md#transporte-de-las-llamadas)).
-- `min_subagents_per_worker` debe ser exactamente `2`. `max_sessions_in_flight` es opcional y se rige por la sección [Límite opcional `max_sessions_in_flight`](#límite-opcional-max_sessions_in_flight).
-- `location.directory` es la ruta literal del servidor OpenCode tal como la devuelve `/api/location`, en cualquier forma absoluta: POSIX (`/srv/p`), unidad Windows (`C:\Users\dev\p`) o UNC (`\\host\share\p`); **en el YAML, entre comillas dobles, cada barra invertida se escribe doblada**: `"C:\\Users\\dev\\p"`, `"\\\\host\\share\\p"` (el validador decodifica `\\` a `\`; una barra simple falla con «scalar inválido»). Se copia sin transformar a `location_directory` de cada tarea y a toda creación de sesión.
-- `location.directory_client` (opcional) es la ruta del mismo workspace tal como la ve el validador (`pwd -P`): úsala cuando el servidor usa una ruta distinta de la visible en el shell (servidor Windows, UNC, montaje o mapeo distinto, Git Bash `/c/...`, WSL `/mnt/c/...`). Si falta, el validador compara `location.directory` con `pwd -P`. Los scopes relativos se resuelven contra `directory_client` (o `directory` si falta) y los scopes absolutos que cuelgan de `location.directory` se reasignan a esa base.
-- Hechos vigentes de V2: confirma identidad y location del servidor (detalle en las dos viñetas siguientes) y los IDs runtime antes de operar. Las tabs son pistas de cliente sin identidad HTTP pública. El hijo nativo es `subagent`; su política de permisos sigue la regla canónica de [agents-and-safety.md](agents-and-safety.md#reglas-de-permisos) (el permiso del padre controla qué agentes lanzar; la política del hijo rige sus herramientas; la herencia descrita es de reglas específicas de sesión, no de la política del agente).
-- Confirma `endpoint_redacted`, `observed_id` y `version` con `/api/info`; quita secretos del endpoint.
-- Confirma `directory`, `projectID` y `subpath` con `/api/location` y compáralos con `Session.Info.location`.
-- `root_session.sessionID` y `parentID` son IDs runtime confirmados de la sesión raíz del run. Los campos de cada tarea describen por separado la sesión worker o subagent y su `parentID` real.
-- Las rutas de sesión son experimentales: antes de usarlas, verifica su presencia en el `/openapi.json` activo del endpoint guardado.
+- `mode` is a ledger convention: `shared-default`, `explicit-server`, or `standalone`. Record what was observed (`shared-default` by default on a local client); the semantics of the CLI flags (`--server`, `--standalone`) requires verification with your installation's help ([api-and-sessions.md](api-and-sessions.md#call-transport)).
+- `min_subagents_per_worker` must be exactly `2`. `max_sessions_in_flight` is optional and is governed by the section [Optional limit `max_sessions_in_flight`](#optional-limit-max_sessions_in_flight).
+- `location.directory` is the literal OpenCode server path exactly as `/api/location` returns it, in any absolute form: POSIX (`/srv/p`), Windows drive (`C:\Users\dev\p`), or UNC (`\\host\share\p`); **in the YAML, inside double quotes, each backslash is written doubled**: `"C:\\Users\\dev\\p"`, `"\\\\host\\share\\p"` (the validator decodes `\\` to `\`; a single backslash fails with "invalid scalar"). It is copied untransformed to `location_directory` of every task and to every session creation.
+- `location.directory_client` (optional) is the path of the same workspace as the validator sees it (`pwd -P`): use it when the server uses a path different from the one visible in the shell (Windows server, UNC, a different mount or mapping, Git Bash `/c/...`, WSL `/mnt/c/...`). If it is missing, the validator compares `location.directory` with `pwd -P`. Relative scopes resolve against `directory_client` (or `directory` if missing), and absolute scopes hanging from `location.directory` are remapped to that base.
+- Current V2 facts: confirm the server's identity and location (detail in the next two bullets) and the runtime IDs before operating. Tabs are client hints without public HTTP identity. The native child is `subagent`; its permission policy follows the canonical rule of [agents-and-safety.md](agents-and-safety.md#permission-rules) (the parent's permission controls which agents to launch; the child's policy governs its tools; the inheritance described is of session-specific rules, not of agent policy).
+- Confirm `endpoint_redacted`, `observed_id`, and `version` with `/api/info`; strip secrets from the endpoint.
+- Confirm `directory`, `projectID`, and `subpath` with `/api/location` and compare them with `Session.Info.location`.
+- `root_session.sessionID` and `parentID` are confirmed runtime IDs of the run's root session. Each task's fields separately describe the worker or subagent session and its real `parentID`.
+- Session routes are experimental: before using them, verify their presence in the active `/openapi.json` of the saved endpoint.
 
-## Campos de tarea
+## Task fields
 
-Cada tarea usa las claves exactas mostradas en el ejemplo. `task_id`, `agent_id` y los IDs se escriben como strings entre comillas dobles. `task_id` es único y empieza con letra o dígito, seguido de letras, dígitos, punto, guion o guion bajo. Dependencias, scopes y evidencias son listas flow-style de strings entre comillas dobles.
+Each task uses the exact keys shown in the example. `task_id`, `agent_id`, and the IDs are written as double-quoted strings. `task_id` is unique and starts with a letter or digit, followed by letters, digits, dot, hyphen, or underscore. Dependencies, scopes, and evidence are flow-style lists of double-quoted strings.
 
-- `task_kind`: `worker_session` para un worker de primer nivel; `subagent` para una sesión hija nativa.
-- `parent_task_id`: `null` para `worker_session`; el `task_id` del worker propietario para `subagent`.
-- `parentID`: el `parentID` real reportado por OpenCode. Es `null` para una sesión worker raíz y el `sessionID` runtime del worker para un subagent.
-- `location_directory`: copia exacta de `run.location.directory` en cada fila, aunque la location también aparezca en los metadatos del runtime.
-- `sessionID`: sesión runtime confirmada, o `null` en filas `pending`/pre-creación antes de crearla. Un `null` no cuenta para el mínimo de hijos de un worker verificado. No reutilices un `sessionID` entre tareas.
-- `agent_id`: ID confirmado del agente usado para la sesión.
-- `dependencias`: IDs de tareas que deben quedar verificadas antes de iniciar esta tarea. No uses dependencias para representar `parent_task_id`.
-- `scope_escritura`: lista del presupuesto de escritura de la tarea. Cada scope de subagent debe quedar dentro de algún scope de escritura de su worker.
-- `criterion`: afirmación concreta que el worker propietario pueda comprobar antes de despachar o cerrar la tarea.
-- `output_path`: artefacto esperado; debe quedar dentro de al menos un `scope_escritura`. `null` es válido mientras la tarea esté en `pending`/`launching`/`running`/`awaiting-approval`/`outcome-unknown` (aún no produce artefacto); el validador de cierre lo exige no nulo y existente en el disco para `verified`, y con `notas` justificativas para los terminales no verificados.
-- `evidence_refs`: lista de archivos de evidencia. Para `verified`, cada tarea subagent verificada escribe su archivo de evidencia dentro de su `scope_escritura` con criterion, result ("pass") y observed; la evidencia de un worker verificado incluye además `subagent_results_integrated` con todos sus hijos verificados que inspecciona e integra en su informe.
-- `estado`: estado local entre `pending`, `launching`, `outcome-unknown`, `running`, `awaiting-approval`, `completed`, `verified`, `blocked`, `failed`, `interrupted`, `cancelled` y `partial`.
-- `runtime_status`: valor literal observado del runtime activo o `null`; no es el estado local.
-- `execution_outcome`: clasificación local `unknown`, `succeeded`, `failed`, `interrupted` o `cancelled`; no reemplaza el estado del runtime.
-- `source_sessionID` y `before_messageID`: ambos `null`, o ambos presentes para un fork confirmado.
-- `created_at` no cambia; `last_state_at` avanza en cada transición. Ambos son UTC `YYYY-MM-DDTHH:MM:SSZ`.
-- `notas`: motivo, decisión o contexto operativo en texto.
+- `task_kind`: `worker_session` for a first-level worker; `subagent` for a native child session.
+- `parent_task_id`: `null` for `worker_session`; the owning worker's `task_id` for `subagent`.
+- `parentID`: the real `parentID` reported by OpenCode. It is `null` for a root worker session and the worker's runtime `sessionID` for a subagent.
+- `location_directory`: exact copy of `run.location.directory` in every row, even if the location also appears in the runtime metadata.
+- `sessionID`: confirmed runtime session, or `null` in `pending`/pre-creation rows before creating it. A `null` does not count toward the minimum of children of a verified worker. Do not reuse a `sessionID` across tasks.
+- `agent_id`: confirmed ID of the agent used for the session.
+- `dependencias`: IDs of tasks that must be verified before starting this task. Do not use dependencies to represent `parent_task_id`.
+- `scope_escritura`: list of the task's write budget. Every subagent scope must fall inside some write scope of its worker.
+- `criterion`: concrete assertion that the owning worker can check before dispatching or closing the task.
+- `output_path`: expected artifact; it must fall inside at least one `scope_escritura`. `null` is valid while the task is in `pending`/`launching`/`running`/`awaiting-approval`/`outcome-unknown` (no artifact yet); the closing validator requires it non-null and existing on disk for `verified`, and with justifying `notas` for the unverified terminals.
+- `evidence_refs`: list of evidence files. For `verified`, every verified subagent task writes its evidence file inside its `scope_escritura` with criterion, result ("pass"), and observed; a verified worker's evidence additionally includes `subagent_results_integrated` with all its verified children that it inspects and integrates into its report.
+- `estado`: local state among `pending`, `launching`, `outcome-unknown`, `running`, `awaiting-approval`, `completed`, `verified`, `blocked`, `failed`, `interrupted`, `cancelled`, and `partial`.
+- `runtime_status`: literal value observed from the active runtime, or `null`; it is not the local state.
+- `execution_outcome`: local classification `unknown`, `succeeded`, `failed`, `interrupted`, or `cancelled`; it does not replace the runtime state.
+- `source_sessionID` and `before_messageID`: both `null`, or both present for a confirmed fork.
+- `created_at` never changes; `last_state_at` advances on every transition. Both are UTC `YYYY-MM-DDTHH:MM:SSZ`.
+- `notas`: reason, decision, or operating context in text.
 
-## Gate de worker verificado
+## Verified worker gate
 
-Esta sección es la única definición del mínimo de dos subagents; el resto de los documentos la enlazan.
+This section is the single definition of the two-subagent minimum; the other documents link here.
 
-El gate canónico solo permite marcar un `worker_session` como `verified` si tiene al menos `run.min_subagents_per_worker` (exactamente dos en este esquema) filas hijas `subagent` en estado `verified`. Para contar, cada fila debe tener `parent_task_id` igual al `task_id` del worker, `parentID` igual al `sessionID` runtime confirmado y no nulo del worker, un `sessionID` propio no nulo y distinto del de cada otra fila contada, y `location_directory` igual a `run.location.directory`, cuya location se confirmó comparándola con `/api/location` y `Session.Info.location`. Por tanto, filas con `sessionID: null` no cuentan y dos filas con IDs duplicados no satisfacen el mínimo de dos sesiones distintas. Además, la evidencia del worker debe confirmar que su informe inspecciona e integra todos los resultados verificados de sus hijos. Los workers `failed`, `blocked` o `partial` se pueden registrar sin cumplir el mínimo; no los marques `verified` para representar trabajo incompleto.
+The canonical gate only allows marking a `worker_session` as `verified` if it has at least `run.min_subagents_per_worker` (exactly two in this schema) child `subagent` rows in `verified` state. To count, each row must have `parent_task_id` equal to the worker's `task_id`, `parentID` equal to the worker's confirmed non-null runtime `sessionID`, its own non-null `sessionID` distinct from that of every other counted row, and `location_directory` equal to `run.location.directory`, a location confirmed by comparing it with `/api/location` and `Session.Info.location`. Therefore, rows with `sessionID: null` do not count, and two rows with duplicate IDs do not satisfy the minimum of two distinct sessions. In addition, the worker's evidence must confirm that its report inspects and integrates all of its children's verified results. `failed`, `blocked`, or `partial` workers may be recorded without meeting the minimum; do not mark them `verified` to represent incomplete work.
 
-## Scopes y orden de escritura
+## Scopes and write order
 
-Definición canónica única en [agents-and-safety.md#presupuesto-de-escritura-y-scopes](agents-and-safety.md#presupuesto-de-escritura-y-scopes). Esta sección solo ancla la referencia: los scopes se comparan por componentes de ruta; dos tareas sin relación padre-hijo con scopes solapados necesitan una dependencia DAG transitiva (también para siblings); la relación worker↔subagent permite scope anidado pero prohíbe escritura simultánea del padre en la parte solapada.
+Single canonical definition in [agents-and-safety.md#write-budget-and-scopes](agents-and-safety.md#write-budget-and-scopes). This section only anchors the reference: scopes are compared by path components; two tasks with no parent-child relation and overlapping scopes need a transitive DAG dependency (also for siblings); the worker↔subagent relation allows a nested scope but forbids the parent writing simultaneously in the overlapping part.
 
-## Límite opcional `max_sessions_in_flight`
+## Optional limit `max_sessions_in_flight`
 
-Las fuentes consultadas no publican un tope global de concurrencia de OpenCode, y la skill no define un valor por defecto: no importes un límite de otra versión ni uses `max_in_flight` (eliminado en schema 3). Añade `run.max_sessions_in_flight: N` (entero positivo) solo ante un límite real observado en la instancia activa. Si se configura, cuenta en conjunto workers y subagents en `launching`, `outcome-unknown`, `running` y `awaiting-approval`; el `outcome-unknown` y la aprobación pendiente conservan la reserva. El validador admite para ambos enteros de `run` (`min_subagents_per_worker` y `max_sessions_in_flight`) el rango 1–2147483647 (tope interno).
+The consulted sources publish no global OpenCode concurrency cap, and the skill defines no default value: do not import a limit from another version or use `max_in_flight` (removed in schema 3). Add `run.max_sessions_in_flight: N` (positive integer) only in the presence of a real limit observed on the active instance. If configured, it counts workers and subagents together in `launching`, `outcome-unknown`, `running`, and `awaiting-approval`; `outcome-unknown` and a pending approval keep the reservation. For both `run` integers (`min_subagents_per_worker` and `max_sessions_in_flight`) the validator accepts the range 1–2147483647 (internal cap).
 
-El validador solo admite el entero; no tiene un campo de procedencia en `run`. Conserva fuente, contexto del runtime, versión/instancia y fecha en `notas` de una fila `worker_session` (campo de tarea aceptado) y no inventes una clave `run.*_source`. Si no puedes dejar esa procedencia durable en un campo aceptado, omite el límite hasta ampliar esquema y validador.
+The validator only accepts the integer; it has no provenance field in `run`. Keep source, runtime context, version/instance, and date in `notas` of a `worker_session` row (accepted task field), and do not invent a `run.*_source` key. If you cannot leave that provenance durably in an accepted field, omit the limit until the schema and validator are extended.
 
-## Write-ahead y reconciliación
+## Write-ahead and reconciliation
 
-Edita el ledger con un helper programático o regenerándolo desde un modelo en memoria; las sustituciones `sed`/regex in place son fuente de corrupción (campos perdidos silenciosamente). Crear/editar:
+Edit the ledger with a programmatic helper or by regenerating it from an in-memory model; in-place `sed`/regex substitutions are a source of corruption (silently lost fields). Create/edit:
 
-1. Crea cada fila como `pending`; completa criterio, propiedad, location, dependencias, scopes, output y `parentID` real/null según la capa.
-2. Antes de invocar un worker o subagent, escribe estado `launching` y actualiza `last_state_at`. Si configuraste `max_sessions_in_flight`, cuenta el slot en ambas capas antes de lanzar.
-3. Si no sabes si el envío tuvo efecto, registra estado `outcome-unknown` y `execution_outcome: "unknown"`. Conserva el slot y el scope; no reenvíes hasta reconciliar endpoint, location, sessionID y parentID.
-4. Al confirmar ejecución o permiso pendiente, registra estado local y runtime por separado. `running` y `awaiting-approval` cuentan contra el límite configurado; `outcome-unknown` también conserva la reserva.
-5. Al obtener resultado terminal, registra `runtime_status` literal y `execution_outcome`. Cambia a `completed`; el worker propietario aún debe inspeccionar el artefacto. Un worker no escribe en el scope de un hijo activo mientras ese hijo escribe.
-6. Solo tras comprobar `output_path` contra `criterion` y que cada `evidence_refs` exista y satisfaga el [gate de evidencia](#formato-de-evidencia), cambia a `verified`. El informe del worker integra los resultados verificados de sus subagents y su evidencia los enumera en `subagent_results_integrated`. Los estados `blocked`, `failed`, `interrupted`, `cancelled` y `partial` conservan el motivo en `notas`.
-7. Un fork confirmado registra el nuevo `sessionID`, junto con `source_sessionID` y `before_messageID`. Comprueba el `/openapi.json` activo antes de llamar una ruta experimental de sesión.
+1. Create each row as `pending`; fill in criterion, ownership, location, dependencies, scopes, output, and the real/null `parentID` per level.
+2. Before invoking a worker or subagent, write state `launching` and update `last_state_at`. If you configured `max_sessions_in_flight`, count the slot in both levels before launching.
+3. If you do not know whether the send took effect, record state `outcome-unknown` and `execution_outcome: "unknown"`. Keep the slot and the scope; do not resend until you reconcile endpoint, location, sessionID, and parentID.
+4. On confirmed execution or pending permission, record the local and runtime states separately. `running` and `awaiting-approval` count against the configured limit; `outcome-unknown` also keeps the reservation.
+5. On a terminal result, record the literal `runtime_status` and the `execution_outcome`. Move to `completed`; the owning worker must still inspect the artifact. A worker does not write in an active child's scope while that child writes.
+6. Only after checking `output_path` against `criterion` and that every `evidence_refs` exists and satisfies the [evidence gate](#evidence-format), move to `verified`. The worker's report integrates its subagents' verified results, and its evidence lists them in `subagent_results_integrated`. The states `blocked`, `failed`, `interrupted`, `cancelled`, and `partial` keep the reason in `notas`.
+7. A confirmed fork records the new `sessionID`, together with `source_sessionID` and `before_messageID`. Check the active `/openapi.json` before calling an experimental session route.
 
-La herencia de reglas específicas de sesión al crear una hija está descrita en la viñeta de [Hechos vigentes de V2](#esquema-único); no la generalices a la política configurada del agente hijo.
+The inheritance of session-specific rules when creating a child is described in the [Current V2 facts](#single-schema) bullet; do not generalize it to the child agent's configured policy.
 
-## Ejemplo poblado de dos niveles
+## Populated two-level example
 
-Las rutas son ilustrativas y relativas a la raíz del workspace; sustitúyelas por rutas reales. Los subagents escriben su `output_path`, así que usan `general`; `explore` es de solo lectura ([agents-and-safety.md](agents-and-safety.md#selección-de-agentes-para-los-dos-niveles)). El ejemplo muestra la forma de un ledger válido de dos niveles. Los paths ilustrativos de output y evidencia deben existir y contener los registros indicados antes de marcar las filas `verified` o pasar el gate de cierre.
+The paths are illustrative and relative to the workspace root; replace them with real paths. Subagents write their `output_path`, so they use `general`; `explore` is read-only ([agents-and-safety.md](agents-and-safety.md#agent-selection-for-the-two-levels)). The example shows the shape of a valid two-level ledger. The illustrative output and evidence paths must exist and contain the indicated records before marking the rows `verified` or passing the closing gate.
 
 ~~~~yaml
 schema_version: 3
@@ -186,9 +186,9 @@ tasks:
     notas: ""
 ~~~~
 
-## Formato de evidencia
+## Evidence format
 
-Cada archivo de `evidence_refs` de una tarea verificada usa un registro plano con formato YAML, con los valores base entre comillas dobles. Cada tarea `subagent` verificada escribe su archivo de evidencia dentro de su `scope_escritura` asignado con criterion, result ("pass") y observed (o lo incluye en su entrega al worker, que lo integra en su informe, para que el orquestador lo persista):
+Each file in `evidence_refs` of a verified task uses a flat YAML-formatted record, with the base values in double quotes. Each verified `subagent` task writes its evidence file inside its assigned `scope_escritura` with criterion, result ("pass"), and observed (or includes it in its deliverable to the worker, which integrates it into its report, for the orchestrator to persist it):
 
 ~~~~yaml
 criterion: "The output records the first independent result."
@@ -196,7 +196,7 @@ result: "pass"
 observed: "Ran test suite; all 12 tests passed successfully."
 ~~~~
 
-El archivo de evidencia del worker verificado incluye además la lista exacta `subagent_results_integrated` con los `task_id` de sus hijos subagent verificados que el informe inspecciona e integra:
+The verified worker's evidence file additionally includes the exact list `subagent_results_integrated` with the `task_id` of its verified subagent children that the report inspects and integrates:
 
 ~~~~yaml
 criterion: "The report inspects and integrates both verified subagent results."
@@ -205,27 +205,27 @@ observed: "Inspected W1-report.md; it compares and integrates the findings from 
 subagent_results_integrated: ["S1", "S2"]
 ~~~~
 
-La extensión del archivo es la que declara `evidence_refs`: si un hijo escribió `.yaml` en lugar de `.yml`, reconcilia `evidence_refs` hacia el archivo existente (nunca reescribas el archivo del hijo; R14a). El gate exige que `criterion` del registro coincida exactamente con la tarea, que `result` sea `pass` y que `observed` no esté vacío. Para un worker verificado, también exige `subagent_results_integrated` con todos sus hijos verificados. Esto registra que se inspeccionó el informe para comprobar integración; el gate de evidencia no sustituye la revisión del contenido del informe. Que exista un archivo, sin ese contenido y correspondencia, no basta. El validador comprueba del archivo: existencia, contención en la raíz del workspace y este contenido; que quede dentro del `scope_escritura` del subagent es obligación de autoría que el script no comprueba.
+The file extension is the one `evidence_refs` declares: if a child wrote `.yaml` instead of `.yml`, reconcile `evidence_refs` toward the existing file (never rewrite the child's file; R14a). The gate requires that the record's `criterion` exactly match the task, that `result` be `pass`, and that `observed` not be empty. For a verified worker, it also requires `subagent_results_integrated` with all its verified children. This records that the report was inspected to check integration; the evidence gate does not replace review of the report's content. An existing file, without that content and correspondence, is not enough. The validator checks in the file: existence, containment in the workspace root, and this content; that it stays inside the subagent's `scope_escritura` is an authoring obligation the script does not check.
 
-## Subconjunto YAML aceptado
+## Accepted YAML subset
 
-Los scripts usan POSIX sh y awk, no una biblioteca YAML. Aceptan solo el formato ilustrado: mapa raíz con `schema_version: 3`, `run:` y `tasks:`; indentación con espacios exactos; tareas como elementos de lista bajo `tasks`; strings entre comillas dobles; `null` literal; entero positivo para `min_subagents_per_worker` y, opcionalmente, `max_sessions_in_flight`; listas flow-style. Codificación: UTF-8 sin BOM (un BOM inicial se tolera y se descarta; los acentos son válidos). Se permiten líneas vacías, comentarios de línea completa y comentarios inline (`#` precedido de espacio y fuera de comillas dobles); un valor como `null  ` o `null # raíz` equivale a `null` en ambos validadores. Se rechazan lista raíz, bloques, anchors, aliases, tabs, claves duplicadas/desconocidas, inline maps y valores o indentaciones fuera de ese subconjunto. Un ledger schema 2 recibe un error que indica la migración requerida.
+The scripts use POSIX sh and awk, not a YAML library. They accept only the illustrated format: root map with `schema_version: 3`, `run:`, and `tasks:`; exact-space indentation; tasks as list items under `tasks`; double-quoted strings; literal `null`; positive integer for `min_subagents_per_worker` and, optionally, `max_sessions_in_flight`; flow-style lists. Encoding: UTF-8 without BOM (a leading BOM is tolerated and discarded; accented characters are valid). Blank lines, full-line comments, and inline comments are allowed (`#` preceded by a space and outside double quotes); a value like `null  ` or `null # root` equals `null` in both validators. Rejected: a root list, blocks, anchors, aliases, tabs, duplicate/unknown keys, inline maps, and values or indentations outside that subset. A schema 2 ledger gets an error stating the required migration.
 
-Los scopes y rutas relativas se resuelven desde la raíz del workspace, que es el directorio físico actual (`pwd -P`, con symlinks resueltos). Esa raíz debe coincidir con `run.location.directory_client` o, si falta, con `run.location.directory`, tras la normalización de forma aplicada por el validador (mayúscula de unidad, vistas POSIX `/c/...` y colapso de `.`/`..`). Cada `location_directory` debe ser idéntico a `run.location.directory` (literal del servidor). Una ruta relativa que normalice fuera de la raíz falla. Los scopes absolutos se conservan; los que cuelgan de `run.location.directory` se reasignan a la raíz del workspace cuando `directory_client` difiere. Los scopes se comparan léxicamente por componentes de ruta; `src` se solapa con `src/a.py`, pero no con `src2`. Un subagent hereda el orden DAG de su worker: si `W2` depende (directa o transitivamente) de `W1`, los hijos de ambos árboles no se consideran paralelos; en cambio, hermanos del mismo worker o workers en paralelo con scopes solapados y sin dependencia siguen fallando. Los symlinks internos del workspace no se resuelven. Un ledger con finales de línea CRLF se acepta: ambos validadores descartan el `\r` final y los espacios finales de `run:`/`tasks:`. Los paths con espacios deben ir entre comillas dobles. Los errores de extracción del cierre indican la línea (`[FAIL] línea N: …`).
+The scopes and relative paths resolve from the workspace root, which is the current physical directory (`pwd -P`, with symlinks resolved). That root must match `run.location.directory_client` or, if missing, `run.location.directory`, after the form normalization applied by the validator (drive uppercased, POSIX views `/c/...`, and `.`/`..` collapse). Every `location_directory` must be identical to `run.location.directory` (server literal). A relative path that normalizes outside the root fails. Absolute scopes are preserved; those hanging from `run.location.directory` are remapped to the workspace root when `directory_client` differs. Scopes are compared lexically by path components; `src` overlaps `src/a.py`, but not `src2`. A subagent inherits its worker's DAG order: if `W2` depends (directly or transitively) on `W1`, the children of both trees are not considered parallel; in contrast, siblings of the same worker, or parallel workers with overlapping scopes and no dependency, still fail. Internal workspace symlinks are not resolved. A ledger with CRLF line endings is accepted: both validators discard the trailing `\r` and the trailing spaces of `run:`/`tasks:`. Paths with spaces must be double-quoted. Closing extraction errors indicate the line (`[FAIL] line N: ...`).
 
-Formas de ruta absoluta admitidas: POSIX, unidad Windows (`C:\x` o `C:/x`, la letra se normaliza a mayúscula) y UNC con barras invertidas (`\\host\share\x`). Recuerda escribir las barras invertidas dobladas (`"C:\\x"`, `"\\\\host\\share\\x"`) porque solo se admiten los escapes `\\` y `\"` dentro de las comillas. En rutas Windows/UNC las barras invertidas ya decodificadas se convierten a `/` para comparar; las mayúsculas/minúsculas del resto de la ruta no se normalizan. Si el workspace declarado es una unidad Windows y el shell es Git Bash, WSL o Cygwin, el validador acepta la vista POSIX `/c/x`, `/mnt/c/x` o `/cygdrive/c/x` del mismo directorio. Para rutas POSIX el comportamiento es el mismo que antes.
+Absolute path forms accepted: POSIX, Windows drive (`C:\x` or `C:/x`, the letter normalized to uppercase), and UNC with backslashes (`\\host\share\x`). Remember to write the backslashes doubled (`"C:\\x"`, `"\\\\host\\share\\x"`) because only the escapes `\\` and `\"` are supported inside quotes. In Windows/UNC paths the already-decoded backslashes are converted to `/` for comparison; the case of the rest of the path is not normalized. If the declared workspace is a Windows drive and the shell is Git Bash, WSL, or Cygwin, the validator accepts the POSIX view `/c/x`, `/mnt/c/x`, or `/cygdrive/c/x` of the same directory. For POSIX paths the behavior is the same as before.
 
-**`directory_client` en forma Windows y límite honesto:** `validate_ledger_closed.sh` convierte la raíz física (`pwd -P`) a la misma forma Windows (solo las vistas `/c/…`, `/mnt/c/…`, `/cygdrive/c/…`), comprueba la contención allí y vuelve a la vista física antes de `[ -f ]`. No existe una conversión automática para UNC ni para montajes arbitrarios (por ejemplo, un recurso de red montado en `/mnt/share` o `\\wsl$`): en esos casos declara `directory_client` con la **ruta POSIX que ve el shell**; es la opción más robusta también para Git Bash y WSL. Si la conversión no es posible, el validador falla cerrado (la ruta queda «fuera de la raíz del workspace»).
+**`directory_client` in Windows form, and an honest limit:** `validate_ledger_closed.sh` converts the physical root (`pwd -P`) to the same Windows form (only the `/c/...`, `/mnt/c/...`, `/cygdrive/c/...` views), checks containment there, and returns to the physical view before `[ -f ]`. There is no automatic conversion for UNC or arbitrary mounts (for example, a network share mounted at `/mnt/share` or `\\wsl$`): in those cases declare `directory_client` with the **POSIX path the shell sees**; it is the most robust option for Git Bash and WSL too. If the conversion is not possible, the validator fails closed (the path is left "outside the workspace root").
 
-## Validadores: dependencias, uso y códigos de salida
+## Validators: dependencies, usage, and exit codes
 
-Ambos scripts son POSIX `sh` + `awk`; `validate_ledger_closed.sh` además usa `dirname`. Fijan `LC_ALL=C` (longitudes y comparaciones por byte, independientes del locale) y, si falta `awk`, salen con código 2 y `ERROR: awk no disponible`. Deben extraerse con finales de línea **LF** (el repositorio lo fuerza con `.gitattributes`: `*.sh text eol=lf`); una copia convertida a CRLF falla bajo `sh` con código no cero. No necesitan Python, yq ni datos fuera del ledger, la evidencia y el workspace. En Windows, ejecútalos desde Git Bash o WSL; sin shell, sigue el fallback manual de [SKILL.md](../SKILL.md#validadores).
+Both scripts are POSIX `sh` + `awk`; `validate_ledger_closed.sh` additionally uses `dirname`. They set `LC_ALL=C` (lengths and comparisons by byte, locale-independent) and, if `awk` is missing, exit with code 2 and `ERROR: awk not available`. They must be extracted with **LF** line endings (the repository forces it via `.gitattributes`: `*.sh text eol=lf`); a copy converted to CRLF fails under `sh` with a non-zero code. They need no Python, yq, or data outside the ledger, the evidence, and the workspace. On Windows, run them from Git Bash or WSL; with no shell, follow the manual fallback of [SKILL.md](../SKILL.md#validators).
 
-| Script | Uso | Qué comprueba |
+| Script | Usage | What it checks |
 | --- | --- | --- |
-| `scripts/validate_dag.sh` | `sh validate_dag.sh <ledger>` | Forma YAML canónica, identidad y ubicación, estados, DAG sin ciclos, scopes, límite opcional, gate de worker verificado |
-| `scripts/validate_ledger_closed.sh` | `sh validate_ledger_closed.sh [--require-evidence] [--allow-degraded] <ledger>` | Ejecuta el anterior y exige cierre: en modo estricto todas las tareas `verified`, `execution_outcome: succeeded`, evidencia con criterion/result/observed e integración; con `--allow-degraded`, estados y requisitos según el párrafo «Invocación única» de abajo |
+| `scripts/validate_dag.sh` | `sh validate_dag.sh LEDGER_PATH` | Canonical YAML shape, identity and location, states, cycle-free DAG, scopes, optional limit, verified worker gate |
+| `scripts/validate_ledger_closed.sh` | `sh validate_ledger_closed.sh [--require-evidence] [--allow-degraded] LEDGER_PATH` | Runs the previous one and enforces closure: in strict mode all tasks `verified`, `execution_outcome: succeeded`, evidence with criterion/result/observed and integration; with `--allow-degraded`, states and requirements per the "Single invocation" paragraph below |
 
-`output_path` y `evidence_refs` siguen la misma regla de rutas que los scopes: `validate_ledger_closed.sh` reasigna a `directory_client` las rutas absolutas bajo `run.location.directory`, las devuelve a la vista física del shell y rechaza toda ruta (absoluta o relativa con `..`) que termine fuera de la raíz física del workspace (por ejemplo, `/etc/hosts`).
+`output_path` and `evidence_refs` follow the same path rule as the scopes: `validate_ledger_closed.sh` remaps to `directory_client` the absolute paths under `run.location.directory`, returns them to the shell's physical view, and rejects every path (absolute, or relative with `..`) that ends outside the workspace's physical root (for example, `/etc/hosts`).
 
-**Invocación única:** `validate_ledger_closed.sh` ya ejecuta `validate_dag.sh`; para un cierre completo basta `sh scripts/validate_ledger_closed.sh --require-evidence <ledger>`. Si la corrida cerró en estados terminales degradados (`failed`, `blocked`, `partial`, `cancelled`, `interrupted`), añade `--allow-degraded`: las tareas `verified` mantienen los requisitos estrictos (`execution_outcome: succeeded`, `output_path`, `evidence_refs`), mientras que las tareas en estados terminales no verificados requieren `notas` no vacías con el motivo/causa y comprueban evidencia si está presente; los estados activos (`pending`, `launching`, `running`, `awaiting-approval`, `outcome-unknown`) siguen prohibidos al cerrar, y `completed` también: es un estado transitorio del ledger, así que toda fila debe pasar de `completed` a `verified` o a un estado terminal degradado antes de validar (el validador lo rechaza en ambos modos). Ejecuta `validate_dag.sh` por separado solo para validar un ledger aún abierto (en curso). Ejecútalos con el workspace como directorio actual. Códigos de salida: `0` pasa, `1` falla la validación, `2` error de uso o entorno (argumentos, ledger ilegible, `pwd -P` inválido, `awk` ausente). La última línea es `TOTAL: N passed, M failed`, con contadores reales de comprobaciones.
+**Single invocation:** `validate_ledger_closed.sh` already runs `validate_dag.sh`; for a full closure, `sh scripts/validate_ledger_closed.sh --require-evidence LEDGER_PATH` is enough. If the run closed in degraded terminal states (`failed`, `blocked`, `partial`, `cancelled`, `interrupted`), add `--allow-degraded`: `verified` tasks keep the strict requirements (`execution_outcome: succeeded`, `output_path`, `evidence_refs`), while tasks in unverified terminal states require non-empty `notas` with the reason/cause and check evidence if present; the active states (`pending`, `launching`, `running`, `awaiting-approval`, `outcome-unknown`) remain forbidden at closing, and so does `completed`: it is a transient ledger state, so every row must move from `completed` to `verified` or to a degraded terminal state before validating (the validator rejects it in both modes). Run `validate_dag.sh` separately only to validate a still-open (in-progress) ledger. Run them with the workspace as the current directory. Exit codes: `0` passes, `1` validation failure, `2` usage or environment error (arguments, unreadable ledger, invalid `pwd -P`, missing `awk`). The last line is `TOTAL: N passed, M failed`, with real check counts.

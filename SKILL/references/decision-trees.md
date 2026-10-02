@@ -1,109 +1,109 @@
-# Árboles de decisión — flujo OpenCode V2 de dos niveles
+# Decision trees — two-level OpenCode V2 flow
 
-El contrato activo de la instancia y la [plantilla canónica del ledger](ledger-template.md) prevalecen. Las rutas HTTP de sesión V2 están marcadas experimentales; verifica el `/openapi.json` del endpoint confirmado antes de llamarlas. [API V2](https://opencode.ai/v2/docs/api/)
+The active instance contract and the [canonical ledger template](ledger-template.md) take precedence. V2 session HTTP routes are marked experimental; verify against the `/openapi.json` of the confirmed endpoint before calling them. [V2 API](https://opencode.ai/v2/docs/api/)
 
-## Árbol 1 — ¿Están confirmados instancia, ubicación y controles?
+## Tree 1 — Are instance, location, and controls confirmed?
 
-Antes de crear una sesión o delegar:
+Before creating a session or delegating:
 
-- Confirma autorización e instancia con `GET /api/info`; consulta `/openapi.json` en ese mismo endpoint para versión y rutas disponibles.
-- Obtén la ubicación de `GET /api/location` y compárala con la sesión del orquestador. Fija un único `run.location.directory` canónico.
-- Si el usuario pidió ver las sesiones como tabs, comprueba que el modo efectivo de tabs de la TUI no sea `off` (`tabs.mode` explícito `on`, o `auto` sin `HERDR_ENV=1` en el proceso TUI, o legado `tabs.enabled: true` sin `mode`; regla completa en [recipe-tui-tabs.md](recipe-tui-tabs.md) §3) y que el cliente permita abrir la sesión existente y verificar la tab por `sessionID`; si no pidió tabs, una tab no verificable no bloquea (se marca "no verificada"; ver Modo degradado en [SKILL.md](../SKILL.md#modo-degradado)). Crear la sesión por HTTP no abre la tab (invariante y mecanismos de tabs: [api-and-sessions.md](api-and-sessions.md#sesión-worker-raíz-crear-y-abrir-tab-son-acciones-distintas)). [TUI V2](https://opencode.ai/v2/docs/cli/tui/), [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/), [configuración CLI](https://opencode.ai/v2/docs/cli/config)
-- Inspecciona el catálogo de agentes, modos y permisos efectivos. Confirma que el worker pueda usar `subagent`, que los dos agentes hijos elegidos existan y puedan ejecutarse como hijos. [Agents V2](https://opencode.ai/v2/docs/agents), [Tools V2](https://opencode.ai/v2/docs/tools/)
+- Confirm authorization and instance with `GET /api/info`; check `/openapi.json` on that same endpoint for version and available routes.
+- Obtain the location from `GET /api/location` and compare it with the orchestrator session. Fix a single canonical `run.location.directory`.
+- If the user asked to see the sessions as tabs, check that the TUI's effective tabs mode is not `off` (explicit `tabs.mode` `on`, or `auto` without `HERDR_ENV=1` in the TUI process, or legacy `tabs.enabled: true` without `mode`; full rule in [recipe-tui-tabs.md](recipe-tui-tabs.md) §3) and that the client allows opening the existing session and verifying the tab by `sessionID`; if the user did not ask for tabs, an unverifiable tab does not block (mark "not verified"; see Degraded mode in [SKILL.md](../SKILL.md#degraded-mode)). Creating the session over HTTP does not open the tab (invariant and tab mechanisms: [api-and-sessions.md](api-and-sessions.md#worker-root-session-creating-and-opening-tab-are-distinct-actions)). [V2 TUI](https://opencode.ai/v2/docs/cli/tui/), [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/), [CLI config](https://opencode.ai/v2/docs/cli/config)
+- Inspect the catalog of agents, modes, and effective permissions. Confirm the worker can use `subagent`, that the two chosen child agents exist, and that they can run as children. [V2 Agents](https://opencode.ai/v2/docs/agents), [V2 Tools](https://opencode.ai/v2/docs/tools/)
 
-    ¿Instancia, ubicación, permisos y herramientas confirmados (y, si el usuario pidió tabs, capacidad de abrir y verificar la tab confirmada)?
-    ├── NO  → Registra el preflight faltante; no afirmes éxito ni envíes trabajo.
-    └── SÍ  → Árbol 2.
+    Are instance, location, permissions, and tools confirmed (and, if the user asked for tabs, the ability to open and verify the tab confirmed)?
+    ├── NO  → Record the missing preflight; do not claim success or send work.
+    └── YES → Tree 2.
 
-Las rutas deben referirse al filesystem del servidor OpenCode. Para Windows, Linux y macOS pasa el valor canónico sin transformarlo según el sistema del cliente; si no corresponde a la misma instancia/ubicación, detente. [API V2](https://opencode.ai/v2/docs/api/)
+Routes must refer to the OpenCode server filesystem. For Windows, Linux, and macOS pass the canonical value without transforming it by the client system; if it does not correspond to the same instance/location, stop. [V2 API](https://opencode.ai/v2/docs/api/)
 
-## Árbol 1b — ¿Qué nomenclatura de título y cómo paso la lista de workers?
+## Tree 1b — Which title nomenclature and how do I pass the worker list?
 
-Antes de crear sesiones, decide cómo se van a llamar. El patrón canónico es `[NN] Nombre` (detalle en [naming-convention.md](naming-convention.md)):
+Before creating sessions, decide how they will be named. The canonical pattern is `[NN] Name` (detail in [naming-convention.md](naming-convention.md)):
 
-- **`[00]`** es siempre la ranura de la raíz del orquestador: `init-run` la crea solo, y `--title` cambia el nombre, no el número.
-- Los workers arrancan en **`[01]`** y siguen correlativos. `worker_list` aplica el correlativo y **reasigna un `[00]` explícito** al siguiente ordinal libre.
-- El nombre propio describe el alcance (`[01] Vermithrax` para análisis ofensivo); el ID del run ya vive en el ledger, así que el título no lo repite.
+- **`[00]`** is always the orchestrator root's slot: `init-run` creates it alone, and `--title` changes the name, not the number.
+- Workers start at **`[01]`** and follow correlatively. The interface applies the correlative and **reassigns an explicit `[00]`** to the next free ordinal.
+- The proper name describes the scope (`[01] Vermithrax` for offensive analysis); the run ID already lives in the ledger, so the title does not repeat it.
 
-¿Cómo paso la lista de workers?
+How do I pass the worker list?
 
-    ├── ¿Títulos con espacios? (casi siempre sí, son legibles)
-    │     ├── SÍ → `--worker "T1" --worker "T2"` (una flag por sesión; inequívoco)
-    │     │        o `--workers "T1, T2"` (lista delimitada por comas)
-    │     └── NUNCA → `--workers "T1 T2"`: el espacio es parte del título,
-    │                  no un delimitador; partiría cada título en dos sesiones.
-    └── ¿Sin número y quieres que se auto-numere?
-          └── SÍ → `worker_list` asigna `01, 02, 03...` en orden de entrada.
+    ├── Titles with spaces? (almost always yes, they are readable)
+    │     ├── YES → `--worker "T1" --worker "T2"` (one flag per session; unambiguous)
+    │     │        or `--workers "T1, T2"` (comma-delimited list)
+    │     └── NEVER → `--workers "T1 T2"`: the space is part of the title,
+    │                  not a delimiter; it would split each title into two sessions.
+    └── Without a number and want it auto-numbered?
+          └── YES → `worker_list` assigns `01, 02, 03...` in entry order.
 
-El dedup compara por **nombre ignorando el ordinal**, así que `--worker "Vermithrax"` reusa `[01] Vermithrax` en vez de crear un duplicado. Si `init-run` responde `INCOMPLETO` y sale 1, algún worker no se creó: reejecuta con los mismos títulos y el dedup completa lo que faltó. [Nomenclatura](naming-convention.md)
+Dedup compares by **name ignoring the ordinal**, so `--worker "Vermithrax"` reuses `[01] Vermithrax` instead of creating a duplicate. If `init-run` responds `INCOMPLETO` and exits 1, some worker was not created: rerun with the same titles and dedup completes what was missing. [Nomenclature](naming-convention.md)
 
-## Árbol 2 — ¿Se puede iniciar al worker raíz con identidad verificable?
+## Tree 2 — Can the root worker be started with verifiable identity?
 
-    ¿El orquestador dispone de una ruta documentada para crear la sesión worker?
-    ├── NO  → Deja el run bloqueado con el acceso/capacidad que falta.
-    └── SÍ  → Crea por separado una sesión raíz `worker_session` con
-               `location.directory` explícito igual a `run.location.directory`.
-               Confirma `sessionID`, `parentID: null` y `Session.Info.location`.
-               Solo si el usuario pidió tabs: abre esa misma sesión en la TUI y
-               verifica la tab con ese ID (la creación por API no abre la tab);
-               si no, marca la tab "no verificada" y sigue.
-               La API es experimental.
+    Does the orchestrator have a documented route to create the worker session?
+    ├── NO  → Leave the run blocked with the missing access/capability.
+    └── YES → Separately create a root `worker_session` with an explicit
+                `location.directory` equal to `run.location.directory`.
+                Confirm `sessionID`, `parentID: null`, and `Session.Info.location`.
+                Only if the user asked for tabs: open that same session in the TUI
+                and verify the tab with that ID (creation by API does not open the
+                tab); otherwise mark the tab "not verified" and proceed.
+                The API is experimental.
 
-Si la API HTTP actual no está autorizada o no puede verificar servidor, sesión o ubicación, no la suplas con rutas privadas del cliente. Si la sesión se creó pero la tab no pudo verificarse, conserva la sesión como existente y marca la apertura como no verificada; reconcilia antes de reintentar. [API V2](https://opencode.ai/v2/docs/api/), [TUI V2](https://opencode.ai/v2/docs/cli/tui/)
+If the current HTTP API is not authorized or cannot verify server, session, or location, do not substitute it with private client routes. If the session was created but the tab could not be verified, keep the session as such and mark the opening as not verified; reconcile before retrying. [V2 API](https://opencode.ai/v2/docs/api/), [V2 TUI](https://opencode.ai/v2/docs/cli/tui/)
 
-Cuando la integración autorizada incluya el método local de estado privado, sigue sus gates de versión y concurrencia en [recipe-tui-tabs.md](recipe-tui-tabs.md); la receta puede fallar cerrado si no puede demostrar que modifica el estado de la TUI correcta.
+When the authorized integration includes the local private-state method, follow its version and concurrency gates in [recipe-tui-tabs.md](recipe-tui-tabs.md); the recipe may fail-closed if it cannot prove it modifies the correct TUI state.
 
-## Árbol 3 — ¿El worker tiene un plan de hijos válido?
+## Tree 3 — Does the worker have a valid child plan?
 
-El worker divide su presupuesto de escritura en tareas cuyo scope cabe dentro del suyo. Cada hijo usa la herramienta nativa `subagent` desde la sesión worker; cada hijo debe tener su propio `sessionID`, `parentID` real del worker y ubicación según la [regla única](subagent-contract.md#regla-única-de-ubicación-de-hijas). La API de sesiones no es la herramienta `subagent` ni la invoca. [Tools V2](https://opencode.ai/v2/docs/tools/), [API V2](https://opencode.ai/v2/docs/api/)
+The worker divides its write budget into tasks whose scope fits within its own. Each child uses the native `subagent` tool from the worker session; each child must have its own `sessionID`, a real `parentID` of the worker, and location per the [single rule](subagent-contract.md#single-rule-for-child-location). The session API is not the `subagent` tool nor does it invoke it. [V2 Tools](https://opencode.ai/v2/docs/tools/), [V2 API](https://opencode.ai/v2/docs/api/)
 
-    ¿Hay al menos dos tareas hijas distintas y agentes válidos?
-    ├── NO  → Replanifica; no marques al worker `verified`.
-    └── SÍ  → ¿Se solapan sus scopes de escritura?
-        ├── SÍ  → Serializa con una dependencia ([regla de scopes](agents-and-safety.md#presupuesto-de-escritura-y-scopes)).
-        └── NO  → Se pueden ejecutar en paralelo si no compiten por otro recurso.
+    Are there at least two distinct child tasks and valid agents?
+    ├── NO  → Replan; do not mark the worker `verified`.
+    └── YES → Do their write scopes overlap?
+        ├── YES → Serialize with a dependency ([scope rule](agents-and-safety.md#write-budget-and-scopes)).
+        └── NO  → Can run in parallel if they do not compete for another resource.
 
-Un worker solo alcanza `verified` con el gate de [ledger-template.md](ledger-template.md#gate-de-worker-verificado); puede quedar `failed`, `blocked` o `partial` sin fingir el mínimo.
+A worker only reaches `verified` with the gate from [ledger-template.md](ledger-template.md#verified-worker-gate); it may remain `failed`, `blocked`, or `partial` without faking the minimum.
 
-## Árbol 4 — ¿Se puede ejecutar ahora sin conflicto ni límite inventado?
+## Tree 4 — Can it run now without conflict or invented limit?
 
-    ¿Hay dependencia pendiente o scopes/resource compartido en paralelo?
-    ├── SÍ  → Serializa según el DAG y espera a que termine cada escritor.
-    └── NO  → ¿El ledger registra un límite real observado en
-              `run.max_sessions_in_flight` con evidencia?
-        ├── SÍ  → Cuenta workers y subagents activos; conserva reserva para
-        │         estado desconocido y aprobaciones pendientes.
-        └── NO  → No impongas un número fijo no observado. Lanza según recursos y scopes
-                  observados, manteniendo el orden de dependencias.
+    Is there a pending dependency or shared scope/resource in parallel?
+    ├── YES → Serialize per the DAG and wait for each writer to finish.
+    └── NO  → Does the ledger record an observed real limit in
+              `run.max_sessions_in_flight` with evidence?
+        ├── YES → Count active workers and subagents; keep a reserve for
+        │         unknown state and pending approvals.
+        └── NO  → Do not impose a fixed, unobserved number. Launch based on observed
+                  resources and scopes, keeping dependency order.
 
-El DAG representa orden de ejecución, nunca propiedad padre-hijo. La propiedad se expresa con `task_kind`, `parent_task_id` y el `parentID` runtime observado. El límite opcional se define en [ledger-template.md](ledger-template.md#límite-opcional-max_sessions_in_flight); los estados locales, en el ledger. [API V2](https://opencode.ai/v2/docs/api/)
+The DAG represents execution order, never parent-child ownership. Ownership is expressed with `task_kind`, `parent_task_id`, and the observed runtime `parentID`. The optional limit is defined in [ledger-template.md](ledger-template.md#optional-limit-max_sessions_in_flight); local states live in the ledger. [V2 API](https://opencode.ai/v2/docs/api/)
 
-## Árbol 5 — ¿El worker integró y reportó evidencia suficiente?
+## Tree 5 — Did the worker integrate and report enough evidence?
 
-    ¿Se reconciliaron cada resultado, efecto y aprobación de los dos niveles?
-    ├── NO  → Mantén el estado desconocido/activo, conserva scopes ocupados,
-    │         y reconcilia por mecanismos publicados en el `/openapi.json`
-    │         ([reglas de espera](api-and-sessions.md#reglas-de-reconciliación-de-la-espera):
-    │         hijas por `parentID`, permisos pendientes, plazo re-armable).
-    └── SÍ  → ¿El informe del worker inspecciona e integra los hijos y cita
-              evidencia verificable?
-        ├── NO  → Marca `partial` o `blocked`; solicita la información pendiente.
-        └── SÍ  → El orquestador valida evidencia, actualiza el ledger de dueño
-                  único y marca `verified` solo si se cumple el mínimo.
+    Were every result, effect, and approval of the two levels reconciled?
+    ├── NO  → Keep the unknown/active state, preserve occupied scopes,
+    │         and reconcile by mechanisms published in the `/openapi.json`
+    │         ([wait rules](api-and-sessions.md#wait-reconciliation-rules):
+    │         children by `parentID`, envelopes, deadline re-armable).
+    └── YES → Does the worker's report inspect and integrate the children and cite
+              verifiable evidence?
+        ├── NO  → Mark `partial` or `blocked`; request the missing information.
+        └── YES → The orchestrator validates evidence, updates the single-owner
+                  ledger, and marks `verified` only if the minimum is met.
 
-No infieras que la tab, el silencio de un stream o el resumen por sí solos prueban finalización. El canal de retorno y las respuestas deben confirmarse por la instancia; si no se pueden leer, el resultado no es verificable. [Matriz de fallos](failure-matrix.md), [API y sesiones](api-and-sessions.md)
+Do not infer that the tab, a stream silence, or a summary alone proves completion. The return channel and responses must be confirmed by the instance; if they cannot be read, the result is not verifiable. [Failure matrix](failure-matrix.md), [API and sessions](api-and-sessions.md)
 
-## Árbol 6 — ¿La acción siguiente es destructiva?
+## Tree 6 — Is the next action destructive?
 
-    ¿Borra sesiones, hijas o datos persistentes?
-    ├── SÍ  → Detente; exige autorización para el ID exacto y confirma el efecto
-    │         en cascada en el `/openapi.json` activo.
-    └── NO  → Procede dentro del scope autorizado y registra evidencia.
+    Does it delete sessions, children, or persistent data?
+    ├── YES → Stop; require authorization for the exact ID and confirm the cascade
+    │         effect in the active `/openapi.json`.
+    └── NO  → Proceed within the authorized scope and record evidence.
 
-## Fuentes oficiales
+## Official sources
 
-- [API HTTP V2](https://opencode.ai/v2/docs/api/) — sesiones, location y schemas; superficie experimental.
-- [TUI V2](https://opencode.ai/v2/docs/cli/tui/) — abrir y cambiar sesiones.
-- [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/) — apertura y lista de tabs en una interfaz existente.
-- [Configuración CLI](https://opencode.ai/v2/docs/cli/config) — modo y alcance de tabs.
-- [Agents V2](https://opencode.ai/v2/docs/agents) y [Tools V2](https://opencode.ai/v2/docs/tools/) — catálogo, permisos y delegación nativa.
+- [V2 HTTP API](https://opencode.ai/v2/docs/api/) — sessions, location, and schemas; experimental surface.
+- [V2 TUI](https://opencode.ai/v2/docs/cli/tui/) — open and switch sessions.
+- [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/) — tab opening and listing in an existing interface.
+- [CLI config](https://opencode.ai/v2/docs/cli/config) — tabs mode and scope.
+- [V2 Agents](https://opencode.ai/v2/docs/agents) and [V2 Tools](https://opencode.ai/v2/docs/tools/) — catalog, permissions, and native delegation.

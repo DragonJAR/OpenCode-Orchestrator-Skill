@@ -1,53 +1,53 @@
-# Agentes y seguridad
+# Agents and safety
 
-Prevalecen el catálogo, los permisos y el `/openapi.json` de la instancia confirmada. Los modos y permisos aquí descritos deben comprobarse en esa instancia antes de cada plan. La API HTTP de OpenCode V2 se describe como experimental. [Agents V2](https://opencode.ai/v2/docs/agents), [API V2](https://opencode.ai/v2/docs/api/)
+The catalog, permissions, and `/openapi.json` of the confirmed instance take precedence. The modes and permissions described here must be verified against that instance before each plan. The OpenCode V2 HTTP API is described as experimental. [V2 Agents](https://opencode.ai/v2/docs/agents), [V2 API](https://opencode.ai/v2/docs/api/)
 
-## Selección de agentes para los dos niveles
+## Agent selection for the two levels
 
-El agente del worker raíz se selecciona según el contrato del endpoint que crea la sesión; la herramienta nativa `subagent` se usa después dentro de esa sesión. No confundas una API/session con la herramienta hija.
+The root worker agent is selected per the contract of the endpoint that creates the session; the native `subagent` tool is used afterwards inside that session. Do not confuse an API/session with the child tool.
 
-| Agente incorporado (si está servido) | Modo documentado | Uso documentado |
+| Built-in agent (if served) | Documented mode | Documented use |
 |---|---|---|
-| `build` | `primary` | Implementación en sesión principal |
-| `plan` | `primary` | Planificación en sesión principal |
-| `general` | `subagent` | Trabajo de varios pasos con herramientas amplias |
-| `explore` | `subagent` | Lectura y exploración sin edición: no lo uses para una tarea cuyo `output_path` deba escribirse |
+| `build` | `primary` | Implementation in the main session |
+| `plan` | `primary` | Planning in the main session |
+| `general` | `subagent` | Multi-step work with broad tools |
+| `explore` | `subagent` | Read and explore without editing: do not use it for a task whose `output_path` must be written |
 
-Para un subagent que debe escribir su `output_path` usa `general` (acceso amplio a herramientas; que pueda editar en tu instancia `requiere verificación` en el catálogo y los permisos efectivos) u otro agente cuya política efectiva permita editar ese scope; o define que el worker escribe esa salida a partir del informe de un `explore`. Estos nombres son referencias documentales, no prueba de disponibilidad ni de permisos. Confirma el ID y su modo en el catálogo activo. Para cada worker prepara al menos dos tareas subagent distintas y agentes válidos para ellas; no intentes lanzar `build` o `plan` como hijo salvo que la instancia los publique con modo permitido. [Agents V2](https://opencode.ai/v2/docs/agents), [Tools V2](https://opencode.ai/v2/docs/tools/)
+For a subagent that must write its `output_path` use `general` (broad tool access; that it can edit in your instance `requires verification` in the catalog and effective permissions) or another agent whose effective policy permits editing that scope; or define that the worker writes that output from an `explore` report. These names are documentary references, not proof of availability or permissions. Confirm the ID and its mode in the active catalog. For each worker prepare at least two distinct subagent tasks and valid agents for them; do not try to launch `build` or `plan` as a child unless the instance publishes them with an allowed mode. [V2 Agents](https://opencode.ai/v2/docs/agents), [V2 Tools](https://opencode.ai/v2/docs/tools/)
 
-## Reglas de permisos
+## Permission rules
 
-Una regla de permiso incluye acción, recurso y efecto (`allow`, `ask` o `deny`). Revisa la política efectiva de cada sesión y recurso, incluyendo lectura, edición, shell y lanzamiento de subagents; el permiso del worker para invocar `subagent` no concede sus propias capacidades al hijo. La documentación describe que un hijo usa su configuración efectiva, que puede diferir de la del padre. [Agents V2](https://opencode.ai/v2/docs/agents), [Tools V2](https://opencode.ai/v2/docs/tools/), [Permissions V2](https://opencode.ai/v2/docs/permissions/)
+A permission rule includes action, resource, and effect (`allow`, `ask`, or `deny`). Review the effective policy of each session and resource, including read, edit, shell, and subagent launch; the worker's permission to invoke `subagent` does not grant its own capabilities to the child. The documentation describes that a child uses its effective configuration, which may differ from the parent's. [V2 Agents](https://opencode.ai/v2/docs/agents), [V2 Tools](https://opencode.ai/v2/docs/tools/), [V2 Permissions](https://opencode.ai/v2/docs/permissions/)
 
-No asumas que la falta de una regla concreta equivale a denegación ni que una instrucción de prompt reemplaza controles. Revisa el orden y el alcance de reglas, aprobaciones guardadas y policies publicadas por la instancia. Una aprobación pendiente conserva el recurso reservado y el estado local no es resultado terminal.
+Do not assume that the lack of a specific rule equals denial, nor that a prompt instruction replaces controls. Review the order and scope of rules, saved approvals, and policies published by the instance. A pending approval keeps the resource reserved and the local state is not a terminal result.
 
-La herencia de permisos observada en el código `v2.0.19` es detalle histórico de implementación. Las páginas actuales no prometen que cada hijo herede las reglas del worker; confirma siempre la política efectiva. [Snapshot `session.ts` v2.0.19](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/session.ts), [Agents V2](https://opencode.ai/v2/docs/agents)
+The permission inheritance observed in code `v2.0.19` is historical implementation detail. The current pages do not promise that every child inherits the worker's rules; always confirm the effective policy. [Snapshot `session.ts` v2.0.19](https://github.com/anomalyco/opencode/blob/v2.0.19/packages/core/src/session.ts), [V2 Agents](https://opencode.ai/v2/docs/agents)
 
-## Presupuesto de escritura y scopes
+## Write budget and scopes
 
-**Esta es la definición única de las reglas de scopes** (R11 de [SKILL.md](../SKILL.md#hard-rules) la resume; el resto de los documentos enlazan aquí).
+**This is the single definition of the scope rules** (R11 of [SKILL.md](../SKILL.md#hard-rules) summarizes it; the rest of the documents link here).
 
-- Compartir servidor, sesión o tab no implica aislamiento del filesystem ni de workspaces; confirma location y permisos efectivos. Las fuentes consultadas no documentan un lock de archivos ni un límite de concurrencia global.
-- Cada worker recibe del orquestador un presupuesto de escritura explícito; el scope de cada subagent es un subconjunto explícito de ese presupuesto (heredar el del padre no autoriza uno más amplio).
-- Los siblings (hijos del mismo worker, o workers raíz) con scopes solapados se serializan con una dependencia del DAG: el segundo no empieza hasta el fin verificado del primero. El DAG expresa orden, no jerarquía de propiedad.
-- Padre e hijo: el worker integra cuando el hijo terminó. Mientras un hijo esté activo o con resultado desconocido, el padre no escribe en su scope (un scope anidado es válido, la escritura simultánea no).
-- Un timeout no libera scope ni capacidad: conserva el estado como incierto hasta reconciliar ejecución, efectos y sesión.
+- Sharing server, session, or tab does not imply filesystem or workspace isolation; confirm location and effective permissions. The consulted sources do not document a file lock or a global concurrency limit.
+- Each worker receives an explicit write budget from the orchestrator; each subagent's scope is an explicit subset of that budget (inheriting the parent's does not authorize a broader one).
+- Siblings (children of the same worker, or root workers) with overlapping scopes are serialized with a DAG dependency: the second does not start until the first is verified-finished. The dependency chain expresses order, not ownership hierarchy.
+- Parent and child: the worker integrates when the child finished. While a child is active or its result is unknown, the parent does not write in its scope (a nested scope is valid, simultaneous writing is not).
+- A timeout does not free scope or capacity: keep the state as uncertain until reconciling execution, effects, and session.
 
-Ver también [patrones de asignación](agent-patterns.md), [Tools V2](https://opencode.ai/v2/docs/tools/) y [API V2](https://opencode.ai/v2/docs/api/).
+See also [assignment patterns](agent-patterns.md), [V2 Tools](https://opencode.ai/v2/docs/tools/) and [V2 API](https://opencode.ai/v2/docs/api/).
 
-## Evidencia de verificación
+## Verification evidence
 
-Un worker solo se marca `verified` con el gate de [ledger-template.md](ledger-template.md#gate-de-worker-verificado). El orquestador único mantiene el ledger y confirma la evidencia. `failed`, `blocked` y `partial` describen resultados legítimos y no obligan a inventar hijos faltantes.
+A worker is only marked `verified` with the gate from [ledger-template.md](ledger-template.md#verified-worker-gate). The single orchestrator maintains the ledger and confirms the evidence. `failed`, `blocked`, and `partial` describe legitimate outcomes and do not require inventing missing children.
 
-## Ubicación portátil
+## Portable location
 
-El valor de `location.directory` corresponde al proyecto del servidor OpenCode. Consulta y valida la ubicación canónica del run en la misma instancia y pásala literalmente al crear la sesión worker raíz; para las hijas rige la [regla única de ubicación de hijas](subagent-contract.md#regla-única-de-ubicación-de-hijas) (heredada o pasada si el esquema de la herramienta la expone, y verificada mediante `GET /api/session/{childID}`). No la reconstruyas con un path local de Windows, Linux o macOS ni leas secretos desde ubicaciones específicas de cada sistema. Si la instancia no confirma que todas las sesiones comparten el directorio exacto, bloquea el despacho. [API V2](https://opencode.ai/v2/docs/api/)
+The `location.directory` value corresponds to the OpenCode server project. Query and validate the run's canonical location on the same instance and pass it literally when creating the root worker session; for children the [single rule for child location](subagent-contract.md#single-rule-for-child-location) applies (inherited or passed if the tool schema exposes it, and verified via `GET /api/session/{childID}`). Do not reconstruct it from a local Windows, Linux, or macOS path nor read secrets from per-OS-specific locations. If the instance does not confirm that all sessions share the exact directory, block dispatch. [V2 API](https://opencode.ai/v2/docs/api/)
 
-Solo si el usuario pidió tabs y necesitas mostrarlas mediante estado local privado, usa solo el flujo versionado y sus gates de seguridad descritos en [recipe-tui-tabs.md](recipe-tui-tabs.md); prefiere la interfaz de tabs documentada cuando ya esté disponible.
+Only if the user asked for tabs and you need to display them through private local state, use only the versioned flow and its safety gates described in [recipe-tui-tabs.md](recipe-tui-tabs.md); prefer the documented tab interface when it is already available.
 
-## Fuentes oficiales
+## Official sources
 
-- [Agents V2](https://opencode.ai/v2/docs/agents) — modos, catálogo y selección.
-- [Tools V2](https://opencode.ai/v2/docs/tools/) — herramienta nativa `subagent`.
-- [Permissions V2](https://opencode.ai/v2/docs/permissions/) — permisos y aprobaciones.
-- [API HTTP V2](https://opencode.ai/v2/docs/api/) — location y sesiones; superficie experimental.
+- [V2 Agents](https://opencode.ai/v2/docs/agents) — modes, catalog, and selection.
+- [V2 Tools](https://opencode.ai/v2/docs/tools/) — native `subagent` tool.
+- [V2 Permissions](https://opencode.ai/v2/docs/permissions/) — permissions and approvals.
+- [V2 HTTP API](https://opencode.ai/v2/docs/api/) — location and sessions; experimental surface.

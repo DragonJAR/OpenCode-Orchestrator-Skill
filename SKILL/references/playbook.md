@@ -1,135 +1,135 @@
-# Playbook operativo — coordinación en dos niveles
+# Operational playbook — two-level coordination
 
-Flujo para OpenCode V2. El runtime activo es la autoridad: confirma servidor, `/openapi.json`, catálogo de herramientas, permisos y ubicación antes de operar. El orquestador mantiene en exclusiva el ledger canónico. Crea sesiones `worker_session` raíz; cada worker coordina al menos dos sesiones `subagent` distintas, inspecciona e integra los resultados y reporta al orquestador. Los campos y estados locales del ledger no son estados nativos de OpenCode.
+Workflow for OpenCode V2. The active runtime is the authority: confirm server, `/openapi.json`, tool catalog, permissions, and location before operating. The orchestrator exclusively maintains the canonical ledger. It creates root `worker_session` sessions; each worker coordinates at least two distinct `subagent` sessions, inspects and integrates results, and reports to the orchestrator. The ledger's local fields and states are not native OpenCode states.
 
-**Correspondencia con los 7 pasos de [SKILL.md](../SKILL.md#execution-steps)** (esta guía desglosa más): S1 → P1; S2 → P2; S3 → P3; S4 → P2–P3; S5 → P4–P5; S6 → P5–P7; S7 → P8 y checklist de cierre.
+**Mapping to the 7 steps of [SKILL.md](../SKILL.md#execution-steps)** (this guide breaks them down further): S1 → P1; S2 → P2; S3 → P3; S4 → P2–P3; S5 → P4–P5; S6 → P5–P7; S7 → P8 plus the closing checklist.
 
-## Paso 1: Detectar intención y alcance
+## Step 1: Detect intent and scope
 
-- **Entrada:** petición del usuario.
-- **Salida:** veredicto (orquestar / no orquestar), objetivo, entregables y restricciones.
-- **Verificación:** la tarea necesita coordinación de varias sesiones, delegación o reconciliación. Para trabajo de una sola sesión, responde inline.
-- **Errores típicos:** activar por una keyword suelta → responde inline; dividir una unidad trivial → resuélvela directamente.
+- **Input:** the user's request.
+- **Output:** verdict (orchestrate / do not orchestrate), goal, deliverables, and constraints.
+- **Verification:** the task needs multi-session coordination, delegation, or reconciliation. For single-session work, reply inline.
+- **Typical errors:** triggering on a loose keyword → reply inline; splitting a trivial unit → solve it directly.
 
-## Paso 2: Preflight de capacidades reales
+## Step 2: Preflight of real capabilities
 
-Antes de crear tareas, consulta el catálogo, `/openapi.json` (solo vale si es JSON OpenAPI; una respuesta HTML no es un esquema, ver [Descubrimiento del contrato](api-and-sessions.md#descubrimiento-del-contrato)) y la interfaz de cliente/runtime activos. Para cada operación registra el nombre exacto anunciado, sus argumentos y la evidencia de que existe:
+Before creating tasks, consult the catalog, `/openapi.json` (it only counts if it is OpenAPI JSON; an HTML response is not a schema, see [Contract discovery](api-and-sessions.md#contract-discovery)), and the active client/runtime interface. For each operation, record the exact advertised name, its arguments, and the evidence that it exists:
 
-| Operación necesaria | Evidencia que se comprueba |
+| Operation needed | Evidence that is checked |
 |---|---|
-| Crear una sesión worker raíz | La capacidad real acepta como argumento explícito `run.location.directory` y devuelve/permite leer el `sessionID`. |
-| Enviar el prompt a esa sesión | La capacidad real identifica el destino por su identidad de sesión y acepta el prompt completo. |
-| Esperar y leer el resultado | Existe una señal documentada de finalización y una forma de leer salida/estado de esa misma sesión. |
-| Exponer y comprobar una tab TUI (**solo si el usuario pidió tabs**) | Crear la sesión por API HTTP no demuestra que aparezca en la TUI. Confirma si la versión activa ofrece API de tabs del CLI plugin o usa estado local `tabs.json`, verifica el esquema/mecanismo y confirma que la tab resultante muestra el `sessionID` esperado; consulta la [receta local](recipe-tui-tabs.md). |
-| Leer resultado de worker | El orquestador puede leer estado y resultado de la sesión mediante la capacidad confirmada; esta es la vía base para informes y solicitudes de cambio. |
-| Canal dinámico worker↔orquestador (opcional) | Solo se habilita si preflight confirma una vía real de ida y vuelta para pedir cambios y responder. No es requisito para el despacho preautorizado. |
-| Crear subagent desde un worker | El catálogo y los permisos permiten el `parentID` nativo correcto, y la ubicación hija cumple la [regla única](subagent-contract.md#regla-única-de-ubicación-de-hijas) (incluida la comprobación `GET /api/session/{childID}`). |
+| Create a root worker session | The real capability accepts `run.location.directory` as an explicit argument and returns/allows reading the `sessionID`. |
+| Send the prompt to that session | The real capability identifies the destination by its session identity and accepts the full prompt. |
+| Wait for and read the result | A documented completion signal exists, plus a way to read output/state from that same session. |
+| Expose and verify a TUI tab (**only if the user asked for tabs**) | Creating the session over the HTTP API does not demonstrate that it appears in the TUI. Confirm whether the active version offers a CLI plugin tabs API or uses the local `tabs.json` state, verify the schema/mechanism, and confirm that the resulting tab shows the expected `sessionID`; see the [local recipe](recipe-tui-tabs.md). |
+| Read a worker's result | The orchestrator can read the session's state and result through the confirmed capability; this is the base channel for reports and change requests. |
+| Dynamic worker↔orchestrator channel (optional) | Enabled only if preflight confirms a real round-trip channel to request changes and respond. It is not a requirement for pre-authorized dispatch. |
+| Create a subagent from a worker | The catalog and permissions allow the correct native `parentID`, and the child location satisfies the [single rule](subagent-contract.md#single-rule-for-child-location) (including the `GET /api/session/{childID}` check). |
 
-No inventes nombres de herramientas, parámetros, rutas, notificaciones ni IDs. No sustituyas crear/abrir/comprobar una sesión o tab por llamar `subagent`. Si falta una capacidad, registra la operación exacta, la fuente consultada y el efecto: detén solo el lanzamiento que depende de ella y reporta el bloqueo; continúa únicamente preparación independiente. Para la ubicación hija, aplica la [regla única](subagent-contract.md#regla-única-de-ubicación-de-hijas); no inventes parámetros.
+Do not invent tool names, parameters, paths, notifications, or IDs. Do not substitute calling `subagent` for creating/opening/verifying a session or tab. If a capability is missing, record the exact operation, the source consulted, and the effect: stop only the launch that depends on it and report the blockage; continue only with independent preparation. For the child location, apply the [single rule](subagent-contract.md#single-rule-for-child-location); do not invent parameters.
 
-## Paso 3: Confirmar acceso, servidor e identidad
+## Step 3: Confirm access, server, and identity
 
-- Confirma autorización y el endpoint que se usará. En clientes locales, registra `shared-default`, `explicit-server` o `standalone` según lo observado; no registres credenciales.
-- Consulta `/openapi.json` para descubrir el contrato, y `/api/info` y `/api/location` únicamente si el esquema activo los publica. Registra `observed_id`, versión, `directory`, `projectID` y `subpath` canónicos en el ledger; si el validador ve el workspace con otra ruta (servidor Windows/UNC, Git Bash, WSL), registra también `directory_client` (ver [ledger-template.md](ledger-template.md#esquema-único)).
-- Comprueba el `sessionID` y `parentID` nativos de la sesión actual del orquestador. `run.root_session` representa esa sesión, no una sesión worker.
-- Cada worker raíz nuevo debe recibir `run.location.directory` como argumento explícito. Para una hija, aplica la [regla única de ubicación de hijas](subagent-contract.md#regla-única-de-ubicación-de-hijas). Después de crear toda sesión, consulta su identidad/location real y exige igualdad exacta con `run.location.directory` antes de enviar o contar trabajo.
-- **Solo si el usuario pidió tabs:** una tab solo es una vista del cliente. Después de crear la sesión, expónla por la API local de tabs del CLI plugin o el estado `tabs.json` únicamente si el contrato/esquema de la versión activa lo confirma. Comprueba que la TUI presenta el `sessionID` esperado y usa `run.location.directory` como su cwd; la creación por API no garantiza esta exposición. Consulta la [receta local](recipe-tui-tabs.md), no inventes rutas ni claves, y no uses la tab como identidad de sesión o `parentID`.
+- Confirm authorization and the endpoint to be used. On local clients, record `shared-default`, `explicit-server`, or `standalone` as observed; do not record credentials.
+- Query `/openapi.json` to discover the contract, and `/api/info` and `/api/location` only if the active schema publishes them. Record `observed_id`, version, and the canonical `directory`, `projectID`, and `subpath` in the ledger; if the validator sees the workspace under a different path (Windows/UNC server, Git Bash, WSL), also record `directory_client` (see [ledger-template.md](ledger-template.md#single-schema)).
+- Check the native `sessionID` and `parentID` of the orchestrator's current session. `run.root_session` represents that session, not a worker session.
+- Every new root worker must receive `run.location.directory` as an explicit argument. For a child, apply the [single rule for child location](subagent-contract.md#single-rule-for-child-location). After creating any session, query its real identity/location and require exact equality with `run.location.directory` before sending or counting work.
+- **Only if the user asked for tabs:** a tab is only a client view. After creating the session, expose it through the CLI plugin's local tabs API or the `tabs.json` state only if the active version's contract/schema confirms it. Check that the TUI shows the expected `sessionID` and uses `run.location.directory` as its cwd; API creation does not guarantee this exposure. See the [local recipe](recipe-tui-tabs.md), do not invent paths or keys, and do not use the tab as session identity or `parentID`.
 
-**Si falla:** sin autorización, servidor verificable, capacidad de sesión explícita o coincidencia de ubicación, no simules éxito ni pruebes rutas adivinadas. Reporta qué comprobación o capacidad falta.
+**If it fails:** without authorization, a verifiable server, explicit session capability, or a location match, do not fake success or try guessed paths. Report which check or capability is missing.
 
-## Paso 4: Diseñar dos niveles y scopes heredados
+## Step 4: Design two levels and inherited scopes
 
-El DAG tiene dos niveles de ejecución además del orquestador:
+The DAG has two execution levels besides the orchestrator:
 
-1. El orquestador asigna cada unidad de trabajo a una tarea `worker_session` nueva, con `parent_task_id: null` y `parentID: null`.
-2. Cada worker, excluido el orquestador, ejecuta al menos dos tareas hijas útiles preautorizadas por el orquestador, como sesiones `subagent` distintas. Puede repetir el mismo `agent_id`; para el mínimo cuentan dos `sessionID` confirmados, no dos nombres de agente ni dos continuaciones de una sesión.
-3. Los subagents no necesitan crear nietos. No afirmes el mínimo si falló la creación de hijos o si no hay dos IDs distintos.
+1. The orchestrator assigns each unit of work to a new `worker_session` task, with `parent_task_id: null` and `parentID: null`.
+2. Every worker except the orchestrator runs at least two useful child tasks pre-authorized by the orchestrator, as distinct `subagent` sessions. It may repeat the same `agent_id`; for the minimum, two confirmed `sessionID`s count — not two agent names or two continuations of one session.
+3. Subagents do not need to create grandchildren. Do not claim the minimum if child creation failed or if there are not two distinct IDs.
 
-Antes de enviar el prompt de trabajo, el orquestador registra en el ledger al menos dos filas `subagent` preautorizadas por worker, cada una con `task_id`, scope, `output_path` y `criterion`; completa `parentID` con el `sessionID` real del worker y `location_directory` con `run.location.directory`. Incluye esas filas en el prompt. El worker ejecuta solo las tareas/scope autorizados y no escribe el ledger. El orquestador lee los resultados por la capacidad confirmada de esa sesión; no se presupone un canal de mensajes entre sesiones raíz independientes. Un handshake dinámico solo se usa si preflight confirma ida y vuelta. Si el worker necesita cambiar una tarea o scope, se detiene y pide actualización por la vía confirmada; el orquestador actualiza el ledger antes de enviar un prompt actualizado.
+Before sending the work prompt, the orchestrator records in the ledger at least two pre-authorized `subagent` rows per worker, each with `task_id`, scope, `output_path`, and `criterion`; it fills `parentID` with the worker's real `sessionID` and `location_directory` with `run.location.directory`. Include those rows in the prompt. The worker executes only the authorized tasks/scopes and does not write the ledger. The orchestrator reads the results through that session's confirmed capability; a message channel between independent root sessions is not presumed. A dynamic handshake is used only if preflight confirms round-trip. If the worker needs to change a task or scope, it stops and requests an update through the confirmed channel; the orchestrator updates the ledger before sending an updated prompt.
 
-| Regla | Acción |
+| Rule | Action |
 |---|---|
-| Dependencia | Si una tarea consume la salida de otra, añade dependencia y espera esa salida. |
-| Scopes y timeouts | Un hijo recibe un subconjunto explícito del scope del worker; solapes, escritor padre y timeout: [regla única](agents-and-safety.md#presupuesto-de-escritura-y-scopes). |
-| Capacidad | Serializa según la capacidad observada y las dependencias reales; `run.max_sessions_in_flight` solo con límite real y procedencia en `notas` ([ledger-template.md](ledger-template.md#límite-opcional-max_sessions_in_flight)). |
+| Dependency | If one task consumes another's output, add a dependency and wait for that output. |
+| Scopes and timeouts | A child receives an explicit subset of the worker's scope; overlaps, parent writer, and timeout: [single rule](agents-and-safety.md#write-budget-and-scopes). |
+| Capacity | Serialize according to observed capacity and real dependencies; `run.max_sessions_in_flight` only with a real limit and provenance in `notas` ([ledger-template.md](ledger-template.md#optional-limit-max_sessions_in_flight)). |
 
-Declara las rutas relativas a la raíz del workspace (resueltas contra `run.location.directory_client` o, si falta, `run.location.directory`; ver [ledger-template.md](ledger-template.md#esquema-único)); comprueba que cada salida esté contenida en el scope de escritura asignado. Cada tarea, de ambos tipos, lleva `task_kind`, `parent_task_id`, `parentID` nativo y `location_directory` según el contrato schema 3 de [SKILL.md](../SKILL.md#identidad-y-ledger).
+Declare paths relative to the workspace root (resolved against `run.location.directory_client` or, if absent, `run.location.directory`; see [ledger-template.md](ledger-template.md#single-schema)); check that every output is contained in the assigned write scope. Every task of both kinds carries `task_kind`, `parent_task_id`, native `parentID`, and `location_directory` per the schema 3 contract in [SKILL.md](../SKILL.md#identity-and-ledger).
 
-## Paso 5: Registrar y crear sesiones worker
+## Step 5: Register and create worker sessions
 
-El orquestador crea una fila por worker antes de despachar: `task_kind: worker_session`, `parent_task_id: null`, `parentID: null`, `location_directory` igual a `run.location.directory`, `source_sessionID: null`, `before_messageID: null`, objetivo, dependencias, scope, salida y criterio. Las filas de hijos nuevos también llevan `source_sessionID: null` y `before_messageID: null`; solo un fork documentado puede registrar sus IDs de origen/corte. Guarda la sesión actual del orquestador por separado en `run.root_session`.
+The orchestrator creates one row per worker before dispatching: `task_kind: worker_session`, `parent_task_id: null`, `parentID: null`, `location_directory` equal to `run.location.directory`, `source_sessionID: null`, `before_messageID: null`, goal, dependencies, scope, output, and criterion. Rows for new children also carry `source_sessionID: null` and `before_messageID: null`; only a documented fork may record its source/cut IDs. Store the orchestrator's current session separately in `run.root_session`.
 
-**Ruta por defecto: los scripts deterministas.** No montes este paso a mano — la navaja suiza hace el trabajo repetible y sus decisiones de gate ya están centralizadas.
+**Default path: the deterministic scripts.** Do not assemble this step by hand — the swiss-army script makes the work repeatable and its gate decisions are already centralized.
 
 ```sh
-sh scripts/orchestrate.sh preflight "$PWD"                                  # P2 + gate de tabs
-sh scripts/orchestrate.sh init-run --worker "Vermithrax" --worker "Glacielle" # raíz [00] + workers + tabs
+sh scripts/orchestrate.sh preflight "$PWD"                                  # P2 + tabs gate
+sh scripts/orchestrate.sh init-run --worker "Vermithrax" --worker "Glacielle" # root [00] + workers + tabs
 ```
 
-`init-run` crea la raíz `[00] Orquestador`, crea cada worker con su `sessionID` verificado, aplica la numeración correlativa de la [nomenclatura](naming-convention.md) y expone las tabs cuando la gate dice `ready`. Un `--worker` por sesión: **el espacio no puede ser delimitador de lista** porque es parte del título. También acepta `--workers "A, B, C"`.
+`init-run` creates the root `[00] Orquestador`, creates each worker with its verified `sessionID`, applies the sequential numbering from the [naming convention](naming-convention.md), and exposes the tabs when the gate says `ready`. One `--worker` per session: **space cannot be the list delimiter** because it is part of the title. It also accepts `--workers "A, B, C"`.
 
-Usa `create-worker` paso a paso solo cuando de verdad lo necesites: crear un worker suelto, forzar uno nuevo con `--force-new`, o reutilizar el preflight cacheado. Cada llamada suelta es un viaje extra, y el flujo `create-worker` en bucle deja la exposición de tabs sin hacer.
+Use `create-worker` step by step only when you truly need it: creating a single worker, forcing a new one with `--force-new`, or reusing the cached preflight. Each standalone call is an extra round-trip, and looping the `create-worker` flow leaves tab exposure undone.
 
-Contrasta `init-run` con el ledger: los `sessionID` que emite son la identidad real. El dedup es **por nombre, ignorando el ordinal**, así que `--worker "Vermithrax"` reusa `[01] Vermithrax` en vez de crear un duplicado.
+Cross-check `init-run` against the ledger: the `sessionID`s it emits are the real identity. Dedup is **by name, ignoring the ordinal**, so `--worker "Vermithrax"` reuses `[01] Vermithrax` instead of creating a duplicate.
 
-Si `init-run` responde `init-run: INCOMPLETO` y sale con código 1, algún worker no se creó: **no lo trates como éxito**. Reejecuta `init-run` con los mismos títulos; el dedup reutiliza lo ya creado y completa lo que falte.
+If `init-run` answers `init-run: INCOMPLETO` and exits with code 1, some worker was not created: **do not treat it as success**. Re-run `init-run` with the same titles; dedup reuses what already exists and completes what is missing.
 
-Para cada worker, en este orden:
+For each worker, in this order:
 
-1. Registra estado local `pending` y luego `launching` antes de llamar la capacidad exacta descubierta.
-2. Crea una sesión raíz con `run.location.directory` explícito. Comprueba el `sessionID`, que `parentID` nativo sea `null` y que la ubicación real coincida exactamente.
-3. Antes de enviar el prompt, registra al menos dos filas `subagent` preautorizadas: `task_id` nuevos, `parent_task_id` igual al worker, `parentID` igual al `sessionID` nativo comprobado, `location_directory` igual a `run.location.directory`, `sessionID: null`, scope, salida y criterio. No uses un estado ficticio de autorización: las filas empiezan `pending`.
-4. Expón la sesión como tab TUI por la vía del [gate de tabs de SKILL.md](../SKILL.md#decision-gates). Con TUI local activa, la exposición aditiva de `tabs.json` es la ruta por defecto ([receta §6](recipe-tui-tabs.md)) y `init-run` ya la hace; si la gate no está `ready`, el run continúa sin tabs y se marca "no verificada". Solo con autorización explícita del operador pasas `--force-tabs`. Comprueba que la TUI muestra el `sessionID` worker y la ubicación canónica. La tab no sustituye los IDs.
-5. Envía el prompt autocontenido [de worker](prompt-templates.md#1-despacho-de-worker-session), incluyendo las filas y sus scopes/criterios exactos.
-6. Registra `sessionID`, identidad comprobada y estado nativo observado. Espera y lee el resultado mediante la capacidad identificada.
+1. Record local state `pending` and then `launching` before calling the exact discovered capability.
+2. Create a root session with explicit `run.location.directory`. Check the `sessionID`, that the native `parentID` is `null`, and that the real location matches exactly.
+3. Before sending the prompt, record at least two pre-authorized `subagent` rows: new `task_id`s, `parent_task_id` equal to the worker, `parentID` equal to the checked native `sessionID`, `location_directory` equal to `run.location.directory`, `sessionID: null`, scope, output, and criterion. Do not use a fake authorization state: the rows start `pending`.
+4. Expose the session as a TUI tab through the [SKILL.md tabs gate](../SKILL.md#decision-gates). With an active local TUI, additive `tabs.json` exposure is the default path ([recipe §6](recipe-tui-tabs.md)) and `init-run` already does it; if the gate is not `ready`, the run continues without tabs and it is marked "not verified". Only with the operator's explicit authorization do you pass `--force-tabs`. Check that the TUI shows the worker `sessionID` and the canonical location. The tab does not replace the IDs.
+5. Send the self-contained [worker](prompt-templates.md#1-worker-session-dispatch) prompt, including the rows and their exact scopes/criteria.
+6. Record the `sessionID`, checked identity, and observed native state. Wait for and read the result through the identified capability.
 
-No uses `subagent` para crear una sesión worker raíz ni para fingir una tab. Si una llamada se vuelve incierta, registra `outcome-unknown`, conserva el scope y reconcilia antes de repetir.
+Do not use `subagent` to create a root worker session or to fake a tab. If a call becomes uncertain, record `outcome-unknown`, keep the scope, and reconcile before repeating.
 
-## Paso 6: Coordinar los subagents de cada worker
+## Step 6: Coordinate each worker's subagents
 
-Cada prompt de worker incluye al menos dos tareas útiles, autocontenidas y verificables ya registradas por el orquestador. El worker no altera sus identidades, criterios ni scopes. Para cada hija preautorizada:
+Every worker prompt includes at least two useful, self-contained, verifiable tasks already registered by the orchestrator. The worker does not alter their identities, criteria, or scopes. For each pre-authorized child:
 
-1. Cada hija usa el `task_id` de su fila preautorizada (registrado como ID nuevo por el orquestador), `task_kind: subagent`, `parent_task_id` igual al `task_id` del worker, `parentID` igual al `sessionID` nativo confirmado del worker y `location_directory` igual a `run.location.directory`.
-2. Lanza una sesión hija nueva por la capacidad `subagent` que el catálogo activo permita, con la ubicación según la [regla única](subagent-contract.md#regla-única-de-ubicación-de-hijas). Comprueba el `sessionID`, `parentID` real y location antes de contarla.
-3. Usa un `agent_id` del catálogo activo. Se permite repetirlo para una sesión distinta.
-4. Dale solo el scope hijo asignado, los datos mínimos, el formato de salida, el criterio y la comprobación requerida.
-5. Registra y reporta el resultado/fallo. No repitas lanzamientos inciertos hasta reconciliar; un fallo de creación no recibe un ID inventado ni cuenta para el mínimo.
+1. Each child uses the `task_id` from its pre-authorized row (registered as a new ID by the orchestrator), `task_kind: subagent`, `parent_task_id` equal to the worker's `task_id`, `parentID` equal to the worker's confirmed native `sessionID`, and `location_directory` equal to `run.location.directory`.
+2. Launch a new child session through the `subagent` capability the active catalog allows, with the location per the [single rule](subagent-contract.md#single-rule-for-child-location). Check the `sessionID`, real `parentID`, and location before counting it.
+3. Use an `agent_id` from the active catalog. Repeating it for a distinct session is allowed.
+4. Give it only the assigned child scope, minimal data, output format, criterion, and the required check.
+5. Record and report the result/failure. Do not repeat uncertain launches until reconciling; a creation failure receives no invented ID and does not count toward the minimum.
 
-Si una tarea o scope preautorizados necesitan cambiar, el worker detiene ese trabajo y solicita actualización por la vía confirmada; nunca modifica el ledger ni crea una fila/scope nuevo. Sin canal dinámico confirmado, deja la solicitud en el resultado que el orquestador puede leer y no reanuda el trabajo cambiado hasta recibir el prompt actualizado. Si no se pudo crear un hijo, avanza solo las otras tareas independientes ya autorizadas y reporta al orquestador los IDs confirmados, resultados, fallo literal y capacidad ausente. El trabajo ejecutado parcialmente queda `partial`; el worker no se declara `verified` ni afirma haber cumplido dos hijos sin el gate completo.
+If a pre-authorized task or scope needs to change, the worker stops that work and requests an update through the confirmed channel; it never modifies the ledger or creates a new row/scope. Without a confirmed dynamic channel, leave the request in the result the orchestrator can read and do not resume the changed work until the updated prompt arrives. If a child could not be created, advance only the other already-authorized independent tasks and report to the orchestrator the confirmed IDs, results, literal failure, and missing capability. Partially executed work stays `partial`; the worker does not declare itself `verified` or claim two children without the full gate.
 
-## Paso 7: Supervisar y reconciliar
+## Step 7: Monitor and reconcile
 
-- Espera la señal documentada de la sesión y lee el resultado con la [lectura acotada](api-and-sessions.md#lectura-acotada-del-resultado) y las [reglas de reconciliación](api-and-sessions.md#reglas-de-reconciliación-de-la-espera): confirma las hijas con `GET /api/session?parentID=`, revisa permisos pendientes en cada ciclo y re-arma el plazo solo si el worker sigue activo (tope; luego `outcome-unknown`). No sondees sin límite ni dupliques prompts.
-- Conserva por separado `runtime_status` literal, `execution_outcome` local (`unknown`, `succeeded`, `failed`, `interrupted`, `cancelled`) y `estado` local del ledger.
-- Un timeout, desconexión o ausencia de aviso no prueba que la sesión haya parado. Reconecta al mismo endpoint; reconfirma ubicación e IDs; usa solo lectura/reconciliación documentada en el `/openapi.json` activo.
-- Hasta reconciliar, conserva el scope del hijo y evita que escriba el padre o un sibling solapado. No reenvíes una petición cuyo efecto sea incierto.
-- El orquestador integra el ledger con cada reporte del worker. Si un worker no pudo crear hijos, registra qué hijos sí existen, sus resultados, el fallo y el mínimo incumplido; no conviertas ese incumplimiento en éxito.
+- Wait for the session's documented signal and read the result with the [bounded result read](api-and-sessions.md#bounded-result-read) and the [reconciliation rules](api-and-sessions.md#wait-reconciliation-rules): confirm the children with `GET /api/session?parentID=`, review pending permissions on every cycle, and re-arm the deadline only while the worker stays active (capped; then `outcome-unknown`). Do not poll without limit or duplicate prompts.
+- Keep separate the literal `runtime_status`, the local `execution_outcome` (`unknown`, `succeeded`, `failed`, `interrupted`, `cancelled`), and the ledger's local `estado`.
+- A timeout, disconnect, or missing notice does not prove the session stopped. Reconnect to the same endpoint; reconfirm location and IDs; use only reads/reconciliation documented in the active `/openapi.json`.
+- Until reconciled, keep the child's scope and prevent the parent or an overlapping sibling from writing. Do not resend a request whose effect is uncertain.
+- The orchestrator integrates the ledger with each worker report. If a worker could not create children, record which children do exist, their results, the failure, and the unmet minimum; do not turn that shortfall into success.
 
-## Paso 8: Inspeccionar, integrar y cerrar
+## Step 8: Inspect, integrate, and close
 
-El gate de `verified` de un worker (mínimo de dos subagents distintos, `parentID` y ubicación correctos, `subagent_results_integrated` con los `task_id` de los hijos verificados) está definido solo en [ledger-template.md](ledger-template.md#gate-de-worker-verificado). Aquí el worker lee los entregables, comprueba cada `criterion`, resuelve contradicciones por evidencia y deja una síntesis que integra todos los resultados verificados; el orquestador inspecciona el reporte y los artefactos del worker antes de cerrar su tarea.
+A worker's `verified` gate (minimum of two distinct subagents, correct `parentID` and location, `subagent_results_integrated` with the verified children's `task_id`s) is defined only in [ledger-template.md](ledger-template.md#verified-worker-gate). Here the worker reads the deliverables, checks each `criterion`, resolves contradictions by evidence, and leaves a synthesis integrating all verified results; the orchestrator inspects the worker's report and artifacts before closing its task.
 
-- La mera existencia de `output_path` o una notificación terminal no prueba el criterio; un mensaje final vacío tampoco prueba no-ejecución (un turno puede cerrar tras tool-calls sin texto): verifica artefactos y `git diff` antes de diagnosticar.
-- La evidencia enlazada sigue el [formato canónico](ledger-template.md#formato-de-evidencia); el padre inspecciona el artefacto, no solo la forma de la nota.
-- Un `blocked`, `failed`, `interrupted`, `cancelled`, `partial`, `launching`, `outcome-unknown`, `running`, `awaiting-approval` o `completed` conserva su resultado real; ninguno satisface por sí solo el gate `verified`.
-- La síntesis separa hechos del runtime, inferencias, convenciones locales, sesiones/IDs, hijos faltantes y límites pendientes.
+- The mere existence of `output_path` or a terminal notification does not prove the criterion; an empty final message does not prove non-execution either (a turn can close after tool-calls with no text): verify artifacts and `git diff` before diagnosing.
+- Linked evidence follows the [canonical format](ledger-template.md#evidence-format); the parent inspects the artifact, not just the shape of the note.
+- A `blocked`, `failed`, `interrupted`, `cancelled`, `partial`, `launching`, `outcome-unknown`, `running`, `awaiting-approval`, or `completed` keeps its real result; none by itself satisfies the `verified` gate.
+- The synthesis separates runtime facts, inferences, local conventions, sessions/IDs, missing children, and pending limits.
 
-## Checklist de cierre
+## Closing checklist
 
-1. Se descubrieron las capacidades reales para crear, promptar y esperar/leer (y, solo si el usuario pidió tabs, abrir/comprobar tabs); faltantes quedaron reportados con fuente.
-2. Servidor y ubicación confirmados; cada worker raíz recibió `run.location.directory` explícito, cada hija cumplió la [regla única de ubicación de hijas](subagent-contract.md#regla-única-de-ubicación-de-hijas), comprobada con `GET /api/session/{childID}`, y toda location real coincide exactamente.
-3. Ledger schema 3: `run.min_subagents_per_worker: 2`; cada fila tiene tipo, padres nativos/locales y ubicación coherentes.
-4. Cada worker verificado cumple el [gate de worker verificado](ledger-template.md#gate-de-worker-verificado) y su evidencia sigue el [formato canónico](ledger-template.md#formato-de-evidencia).
-5. Workers reportaron estado y resultados; solo el orquestador modificó el ledger.
-6. Scopes heredados; siblings solapados serializados; el padre no escribió en scopes activos; timeout reconciliado antes de liberar.
-7. Si figura `run.max_sessions_in_flight`, cumple la [regla del límite opcional](ledger-template.md#límite-opcional-max_sessions_in_flight).
-8. Artefactos comprobados contra criterios; las limitaciones y puntos de integración pendientes constan en el cierre.
+1. The real capabilities for creating, prompting, and waiting/reading (and, only if the user asked for tabs, opening/checking tabs) were discovered; any missing ones were reported with their source.
+2. Server and location confirmed; every root worker received explicit `run.location.directory`, every child satisfied the [single rule for child location](subagent-contract.md#single-rule-for-child-location), checked with `GET /api/session/{childID}`, and every real location matches exactly.
+3. Ledger schema 3: `run.min_subagents_per_worker: 2`; every row has coherent type, native/local parents, and location.
+4. Every verified worker satisfies the [verified worker gate](ledger-template.md#verified-worker-gate) and its evidence follows the [canonical format](ledger-template.md#evidence-format).
+5. Workers reported state and results; only the orchestrator modified the ledger.
+6. Inherited scopes; overlapping siblings serialized; the parent did not write into active scopes; timeout reconciled before release.
+7. If `run.max_sessions_in_flight` appears, it satisfies the [optional limit rule](ledger-template.md#optional-limit-max_sessions_in_flight).
+8. Artifacts checked against criteria; limitations and pending integration points are recorded in the close-out.
 
-### Rutas de fallo
+### Failure paths
 
-- Si el catálogo o `/openapi.json` no confirma una operación, no adivines su nombre ni llames una ruta especulativa.
-- Si falta capacidad de creación de sesión, envío de prompt, espera/lectura de resultado o (solo si se pidieron tabs) exposición/verificación local de tab, nombra exactamente la capacidad ausente y la fuente consultada; bloquea solo el trabajo que depende de ella. El resultado worker se lee desde su sesión; no asumas un canal independiente de reportes.
-- Si el worker raíz no recibió la ubicación explícita, o si la location real de cualquier sesión no coincide con la canónica, no envíes ni cuentes ese trabajo. Si no se cumple la [regla única de ubicación de hijas](subagent-contract.md#regla-única-de-ubicación-de-hijas), reporta el bloqueo.
-- Si la política del worker no permite `subagent`, o la ubicación hija no cumple la regla única, registra el bloqueo; no inventes argumentos ni sustituyas la sesión hija por una tab u otro tipo de tarea.
-- Si scopes se solapan, serializa; si una ejecución tiene estado incierto, conserva el scope hasta reconciliar.
-- Si se crean menos de dos hijos distintos, registra los IDs/resultados/fallos y deja el mínimo incumplido (`partial` si hubo avance incompleto; nunca `verified`; ver el [gate](ledger-template.md#gate-de-worker-verificado)).
+- If the catalog or `/openapi.json` does not confirm an operation, do not guess its name or call a speculative path.
+- If session-creation, prompt-sending, result wait/read, or (only if tabs were requested) local tab exposure/verification capability is missing, name the absent capability and the source consulted exactly; block only the work that depends on it. The worker result is read from its session; do not assume an independent reporting channel.
+- If the root worker did not receive the explicit location, or if any session's real location does not match the canonical one, do not send or count that work. If the [single rule for child location](subagent-contract.md#single-rule-for-child-location) is not satisfied, report the blockage.
+- If the worker's policy does not allow `subagent`, or the child location does not satisfy the single rule, record the blockage; do not invent arguments or substitute the child session with a tab or another task kind.
+- If scopes overlap, serialize; if an execution has uncertain state, keep the scope until reconciled.
+- If fewer than two distinct children were created, record the IDs/results/failures and leave the minimum unmet (`partial` if progress was incomplete; never `verified`; see the [gate](ledger-template.md#verified-worker-gate)).
