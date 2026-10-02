@@ -17,10 +17,10 @@ set -u
 # Byte-exact length/substr/comparisons, independent of the caller's locale.
 LC_ALL=C
 export LC_ALL
-command -v awk >/dev/null 2>&1 || { printf 'ERROR: awk no disponible\n' >&2; exit 2; }
+command -v awk >/dev/null 2>&1 || { printf 'ERROR: awk not available\n' >&2; exit 2; }
 
 usage() {
-  printf 'Uso: %s <ruta-ledger> [--require-evidence] [--allow-degraded]\n' "$0" >&2
+  printf 'Usage: %s <ledger-path> [--require-evidence] [--allow-degraded]\n' "$0" >&2
   exit 2
 }
 
@@ -31,18 +31,18 @@ for arg in "$@"; do
   case "$arg" in
     --require-evidence) REQUIRE_EVIDENCE=1 ;;
     --allow-degraded) ALLOW_DEGRADED=1 ;;
-    -*) printf 'ERROR: flag desconocido: %s\n' "$arg" >&2; usage ;;
+    -*) printf 'ERROR: unknown flag: %s\n' "$arg" >&2; usage ;;
     *) [ -z "$LEDGER" ] || usage; LEDGER=$arg ;;
   esac
 done
 [ -n "$LEDGER" ] || usage
 [ -f "$LEDGER" ] && [ -r "$LEDGER" ] || {
-  printf 'ERROR: no puedo leer el ledger: %s\n' "$LEDGER" >&2
+  printf 'ERROR: cannot read the ledger: %s\n' "$LEDGER" >&2
   exit 2
 }
 
 WS_PHYS=$(pwd -P 2>/dev/null) || {
-  printf 'ERROR: no puedo determinar el directorio actual (pwd -P)\n' >&2
+  printf 'ERROR: cannot determine the current directory (pwd -P)\n' >&2
   exit 2
 }
 export WS_PHYS
@@ -50,7 +50,7 @@ export WS_PHYS
 SCRIPT_DIR=$(dirname "$0") || exit 2
 DAG_VALIDATOR=$SCRIPT_DIR/validate_dag.sh
 [ -f "$DAG_VALIDATOR" ] && [ -r "$DAG_VALIDATOR" ] || {
-  printf 'ERROR: falta el validador DAG: %s\n' "$DAG_VALIDATOR" >&2
+  printf 'ERROR: DAG validator missing: %s\n' "$DAG_VALIDATOR" >&2
   exit 2
 }
 
@@ -66,7 +66,7 @@ function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
 # Report the first extraction problem with its line number (stderr; stdout carries records).
 function badline(msg) {
   bad = 1
-  if (!reported) { printf "[FAIL] línea %d: %s\n", FNR, msg | "cat 1>&2"; reported = 1 }
+  if (!reported) { printf "[FAIL] line %d: %s\n", FNR, msg | "cat 1>&2"; reported = 1 }
 }
 function strip_comment(s,   i, c, q, esc, out) {
   q = 0; esc = 0; out = ""
@@ -214,7 +214,7 @@ function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
   }
   if (line ~ /^  - task_id:/) {
     raw = line; sub(/^  - task_id:[ \t]*/, "", raw)
-    if (!scalar(raw)) { badline("task_id inválido (usa string entre comillas dobles)"); next }
+    if (!scalar(raw)) { badline("invalid task_id (use a double-quoted string)"); next }
     task_n++; current = task_n
     task_id[current] = SCALAR
     task_state[current] = task_outcome[current] = task_runtime[current] = ""
@@ -229,12 +229,12 @@ function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
     raw = line; sub(/^    [A-Za-z_][A-Za-z0-9_]*:[ \t]*/, "", raw)
     raw = trim(raw)   # "null  " and "null # c" (comment already stripped) must equal "null"
     if (key == "evidence_refs") {
-      if (!list_items(raw)) { badline("lista flow-style inválida en evidence_refs"); next }
+      if (!list_items(raw)) { badline("invalid flow-style list in evidence_refs"); next }
       task_evidence_n[current] = LIST_N
       for (i = 1; i <= LIST_N; i++) task_evidence[current, i] = LIST_ITEM[i]
     } else if (key == "parent_task_id") {
       if (raw == "null") task_parent_null[current] = 1
-      else if (!scalar(raw)) { badline("scalar inválido en parent_task_id"); next }
+      else if (!scalar(raw)) { badline("invalid scalar in parent_task_id"); next }
       else { task_parent[current] = SCALAR; task_parent_null[current] = 0 }
     } else if (key == "task_kind" || key == "estado" || key == "execution_outcome" ||
                key == "sessionID" || key == "runtime_status" || key == "criterion" ||
@@ -242,7 +242,7 @@ function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
       val_is_null = 0
       if (raw == "null" && (key == "sessionID" || key == "runtime_status" || key == "output_path")) {
         val = ""; val_is_null = 1
-      } else if (!scalar(raw)) { badline("scalar inválido en " key); next }
+      } else if (!scalar(raw)) { badline("invalid scalar in " key); next }
       else val = SCALAR
       if (key == "task_kind") task_kind[current] = val
       else if (key == "estado") task_state[current] = val
@@ -276,7 +276,7 @@ END {
 ' "$LEDGER")
 EXTRACT_RC=$?
 if [ "$EXTRACT_RC" -ne 0 ]; then
-  printf '[FAIL] no se pudieron extraer campos del ledger canónico\n' >&2
+  printf '[FAIL] could not extract fields from the canonical ledger\n' >&2
   exit 1
 fi
 
@@ -286,36 +286,36 @@ TASKS=0
 PATH_FAILURES=0
 if [ "$DAG_RC" -ne 0 ]; then
   FAILS=$((FAILS + 1))
-  printf '[FAIL] el gate DAG rechazó el ledger (exit %s)\n' "$DAG_RC"
+  printf '[FAIL] the DAG gate rejected the ledger (exit %s)\n' "$DAG_RC"
 fi
 
 # Close-gate requirements for a task whose estado is "verified". These checks are
 # identical in strict mode and in --allow-degraded mode (only the strict branch
-# adds the "no está en estado local verified" precondition before calling).
+# adds the "is not in local estado verified" precondition before calling).
 # Operates on the record fields already unpacked by the read loop below.
 check_verified() {
   if [ "$outcome" != "succeeded" ]; then
-    printf '[FAIL] %s requiere execution_outcome succeeded (actual: %s)\n' "$task_id" "$outcome"
+    printf '[FAIL] %s requires execution_outcome succeeded (actual: %s)\n' "$task_id" "$outcome"
     task_bad=1
   fi
   if [ "$runtime_is_null" = "1" ] || [ -z "$runtime" ]; then
-    printf '[FAIL] %s no registra runtime_status observado\n' "$task_id"
+    printf '[FAIL] %s records no observed runtime_status\n' "$task_id"
     task_bad=1
   fi
   if [ -z "$criterion" ]; then
-    printf '[FAIL] %s no registra criterion\n' "$task_id"
+    printf '[FAIL] %s records no criterion\n' "$task_id"
     task_bad=1
   fi
   if [ -z "$evidence_count" ] || [ "$evidence_count" -eq 0 ]; then
-    printf '[FAIL] %s verified sin evidence_refs\n' "$task_id"
+    printf '[FAIL] %s verified without evidence_refs\n' "$task_id"
     task_bad=1
   fi
   if [ "$output_is_null" = "1" ] || [ -z "$path" ]; then
-    printf '[FAIL] %s no registra output_path\n' "$task_id"
+    printf '[FAIL] %s records no output_path\n' "$task_id"
     task_bad=1
   fi
   if [ "$task_bad" -eq 0 ]; then
-    printf '[OK] %s tiene resultado terminal verificado y criterion\n' "$task_id"
+    printf '[OK] %s has verified terminal outcome and criterion\n' "$task_id"
     PASSED=$((PASSED + 1))
   fi
 }
@@ -344,30 +344,30 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
           ;;
         failed|blocked|partial|cancelled|interrupted)
           if [ -z "$notas" ]; then
-            printf '[FAIL] %s en estado %s requiere notas no vacías con el motivo/causa\n' "$task_id" "$estado"
+            printf '[FAIL] %s in estado %s requires non-empty notas with the reason/cause\n' "$task_id" "$estado"
             task_bad=1
           fi
           if [ -z "$criterion" ]; then
-            printf '[FAIL] %s no registra criterion\n' "$task_id"
+            printf '[FAIL] %s records no criterion\n' "$task_id"
             task_bad=1
           fi
           if [ "$task_bad" -eq 0 ]; then
-            printf '[OK] %s tiene resultado terminal degradado (%s) con motivo en notas\n' "$task_id" "$estado"
+            printf '[OK] %s has degraded terminal outcome (%s) with reason in notas\n' "$task_id" "$estado"
             PASSED=$((PASSED + 1))
           fi
           ;;
         pending|launching|running|awaiting-approval|outcome-unknown)
-          printf '[FAIL] %s en estado activo no permitido al cerrar (estado: %s)\n' "$task_id" "$estado"
+          printf '[FAIL] %s in an active estado not allowed at close (estado: %s)\n' "$task_id" "$estado"
           task_bad=1
           ;;
         *)
-          printf '[FAIL] %s en estado no terminal para cierre degradado (estado: %s)\n' "$task_id" "$estado"
+          printf '[FAIL] %s in a non-terminal estado for degraded close (estado: %s)\n' "$task_id" "$estado"
           task_bad=1
           ;;
       esac
     else
       if [ "$estado" != "verified" ]; then
-        printf '[FAIL] %s no está en estado local verified (estado: %s)\n' "$task_id" "$estado"
+        printf '[FAIL] %s is not in local estado verified (estado: %s)\n' "$task_id" "$estado"
         task_bad=1
       fi
       check_verified
@@ -376,13 +376,13 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
     if [ "$REQUIRE_EVIDENCE" -eq 1 ] && [ "$output_is_null" != "1" ] && [ -n "$path" ]; then
       case "$path" in
         '!OUTSIDE!'*)
-          printf '[FAIL] %s output_path sale de la raíz del workspace: %s\n' "$task_id" "${path#'!OUTSIDE!'}"
+          printf '[FAIL] %s output_path escapes the workspace root: %s\n' "$task_id" "${path#'!OUTSIDE!'}"
           FAILS=$((FAILS + 1)); PATH_FAILURES=$((PATH_FAILURES + 1)); continue ;;
         /*|[A-Za-z]:[/\\]*) resolved=$path ;;
         *) resolved=$WS_PHYS/$path ;;
       esac
       if [ "$estado" = "verified" ] && [ ! -f "$resolved" ]; then
-        printf '[FAIL] %s output_path inexistente: %s (--require-evidence)\n' "$task_id" "$path"
+        printf '[FAIL] %s nonexistent output_path: %s (--require-evidence)\n' "$task_id" "$path"
         FAILS=$((FAILS + 1)); PATH_FAILURES=$((PATH_FAILURES + 1))
       fi
     fi
@@ -394,16 +394,16 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
     evidence_bad=0
     case "$evidence_path" in
       '!OUTSIDE!'*)
-        printf '[FAIL] %s evidence_refs sale de la raíz del workspace: %s\n' "$task_id" "${evidence_path#'!OUTSIDE!'}"
+        printf '[FAIL] %s evidence_refs escapes the workspace root: %s\n' "$task_id" "${evidence_path#'!OUTSIDE!'}"
         FAILS=$((FAILS + 1)); PATH_FAILURES=$((PATH_FAILURES + 1)); continue ;;
       /*|[A-Za-z]:[/\\]*) resolved=$evidence_path ;;
       *) resolved=$WS_PHYS/$evidence_path ;;
     esac
     if [ ! -f "$resolved" ]; then
       if [ "$REQUIRE_EVIDENCE" -eq 1 ]; then
-        printf '[FAIL] %s evidence_refs inexistente: %s (--require-evidence)\n' "$task_id" "$evidence_path"
+        printf '[FAIL] %s nonexistent evidence_refs: %s (--require-evidence)\n' "$task_id" "$evidence_path"
       else
-        printf '[FAIL] %s evidence_refs inexistente o ilegible: %s\n' "$task_id" "$evidence_path"
+        printf '[FAIL] %s nonexistent or unreadable evidence_refs: %s\n' "$task_id" "$evidence_path"
       fi
       FAILS=$((FAILS + 1)); PATH_FAILURES=$((PATH_FAILURES + 1)); evidence_bad=1
     elif ! CRITERION="$evidence_criterion" EXPECTED_CHILDREN="$expected_children" awk '
@@ -506,14 +506,14 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
       }
     ' "$resolved"; then
       if [ "$evidence_task_kind" = "worker_session" ] && [ -n "$expected_children" ]; then
-        printf '[FAIL] %s evidencia no confirma criterion/result/observed ni integra todos los hijos verificados: %s\n' "$task_id" "$evidence_path"
+        printf '[FAIL] %s evidence does not confirm criterion/result/observed nor integrate every verified child: %s\n' "$task_id" "$evidence_path"
       else
-        printf '[FAIL] %s evidencia no demuestra criterion/result/observed: %s\n' "$task_id" "$evidence_path"
+        printf '[FAIL] %s evidence does not prove criterion/result/observed: %s\n' "$task_id" "$evidence_path"
       fi
       FAILS=$((FAILS + 1)); evidence_bad=1
     fi
     if [ "$evidence_bad" -eq 0 ]; then
-      printf '[OK] %s evidence_refs confirma criterion: %s\n' "$task_id" "$evidence_path"
+      printf '[OK] %s evidence_refs confirms criterion: %s\n' "$task_id" "$evidence_path"
       PASSED=$((PASSED + 1))
     fi
   fi
@@ -522,14 +522,14 @@ $RECORDS
 EOF
 
 if [ "$TASKS" -eq 0 ]; then
-  printf '[FAIL] ledger sin tareas que cerrar\n'
+  printf '[FAIL] ledger with no tasks to close\n'
   FAILS=$((FAILS + 1))
 fi
 if [ "$REQUIRE_EVIDENCE" -eq 1 ] && [ "$PATH_FAILURES" -eq 0 ] && [ "$FAILS" -eq 0 ]; then
   if [ "$ALLOW_DEGRADED" -eq 1 ]; then
-    printf '[OK] todas las rutas output_path y evidence_refs requeridas existen como archivos\n'
+    printf '[OK] every required output_path and evidence_refs path exists as a file\n'
   else
-    printf '[OK] todas las rutas output_path y evidence_refs existen como archivos\n'
+    printf '[OK] every output_path and evidence_refs path exists as a file\n'
   fi
   PASSED=$((PASSED + 1))
 fi

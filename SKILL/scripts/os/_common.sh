@@ -27,7 +27,7 @@ http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json'
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
   awk 'BEGIN{ORS=""}{gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");gsub(/\r/,"\\r");if(NR>1)printf "\\n";printf "%s",$0}'
 }
-json_get_field() {  # stdin=JSON, $1=KEY -> emite valor
+json_get_field() {  # stdin=JSON, $1=KEY -> emits the value
   awk -v k="\"$1\"" 'index($0,k){p=index($0,k)+length(k);
     while(p<=length($0)&&substr($0,p,1)~/[ \t:]/)p++; s=p; c=substr($0,s,1);
     if(c=="{"||c=="["){d=0;for(i=s;i<=length($0);i++){x=substr($0,i,1);if(x==c)d++;else if(x==(c=="{"?"}":"]")){d--;if(d==0){print substr($0,s,i-s+1);exit}}}}
@@ -38,10 +38,10 @@ json_get_field() {  # stdin=JSON, $1=KEY -> emite valor
 cache_put() { printf '%s\n' "$2" > "$CACHE_DIR/$1"; }
 cache_get() { if [ -f "$CACHE_DIR/$1" ]; then cat "$CACHE_DIR/$1"; else printf ''; fi; }
 cache_has() { [ -f "$CACHE_DIR/$1" ] && [ -s "$CACHE_DIR/$1" ]; }
-# auth_flag: flag de Basic auth para curl. Vive AQUI, no en orchestrate.sh, porque
-# find_dedup y http_* la usan y _common.sh es la capa baja. Definirla en el
-# llamador hacia depender del orden de sourcing: correcto en runtime, fragil ante
-# cualquier test o inclusion directa de _common.sh.
+# auth_flag: Basic-auth flag for curl. It lives HERE, not in orchestrate.sh,
+# because find_dedup and http_* use it and _common.sh is the low layer.
+# Defining it in the caller would create a dependency on sourcing order:
+# correct at runtime, fragile against any test or direct inclusion of _common.sh.
 auth_flag() { if cache_has auth_password; then printf '%s' "-u opencode:$(cat "$CACHE_DIR/auth_password")"; fi; }
 require_state() {
   for k in endpoint version projectID model_default; do
@@ -51,9 +51,9 @@ require_state() {
 
 # --- arg parsing ------------------------------------------------------------------
 parse_kv() {
-  # POSITIONAL recoge tokens sueltos. Antes `*) shift` los descartaba en
-  # silencio, de modo que `init-run --workers "T1" "T2" "T3"` creaba solo T1
-  # sin avisar. Ahora se suman a WORKERS (ver sub_init_run).
+  # POSITIONAL collects loose tokens. Before, `*) shift` discarded them
+  # silently, so `init-run --workers "T1" "T2" "T3"` created only T1 with no
+  # warning. They are now added to WORKERS (see sub_init_run).
   POSITIONAL=""; WORKER_TITLES=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -89,7 +89,7 @@ sid, title, tui_cwd, bk, lockmode = sys.argv[1:6]
 chan = os.environ.get("OPENCODE_TUI_CHANNEL","latest")
 p = os.environ.get("ORCHESTRATE_TABS_JSON")
 if not p:
-    sroot = os.environ.get("ORCHESTRATE_STATE_ROOT","")
+    sroot = os.environ.get("OPENCODE_STATE_ROOT") or os.environ.get("ORCHESTRATE_STATE_ROOT","")
     p = (os.path.join(sroot, chan, "tui", "tabs.json") if sroot
          else os.path.expanduser(f"~/.local/state/opencode/{chan}/tui/tabs.json"))
 if not os.path.exists(p):
@@ -107,10 +107,10 @@ if lockmode == "fcntl":
         print("tabs_status=lock-fail-closed"); sys.exit(3)
 try:
     d = json.load(f)
-    # --- schema guard (la garantia real, no el numero de version) --------------
-    # Antes de escribir, confirma la forma EXACTA de la que depende el merge. Si
-    # la TUI cambio el esquema en una version nueva, fallamos cerrado en vez de
-    # deformar su archivo. Esto es lo que justifica aceptar cualquier 2.x.
+    # --- schema guard (the real guarantee, not the version number) --------------
+    # Before writing, confirm the EXACT shape the merge depends on. If the TUI
+    # changed the schema in a new version, we fail closed instead of deforming
+    # its file. This is what justifies accepting any 2.x.
     def bad_shape(v):
         return (not isinstance(v, dict) or not isinstance(v.get("tabs"), list)
                 or not isinstance(v.get("unread"), dict))
@@ -139,12 +139,12 @@ try:
             break
     else:
         tabs.append({"sessionID": sid, "title": title})
-    # Escritura EN EL MISMO descriptor que esta bloqueado. Antes se usaba
-    # temp + os.replace, que destruye el inodo: el lock quedaba sobre un archivo
-    # que ya no existia, y dos merges concurrentes podian perder una tab
-    # mientras AMBOS reportaban ok-verificada (S1b-10). Perdemos atomicidad de
-    # rename, pero conservamos exclusion mutua real, que es lo que evita la
-    # perdida silenciosa; el backup de arriba cubre el caso de crash a mitad.
+    # Write through the SAME descriptor that holds the lock. temp + os.replace
+    # was used before, which destroys the inode: the lock ended up on a file
+    # that no longer existed, and two concurrent merges could lose one tab
+    # while BOTH reported ok-verified (S1b-10). We lose rename atomicity but
+    # keep real mutual exclusion, which is what prevents silent loss; the
+    # backup above covers the crash-mid-write case.
     f.seek(0); f.truncate()
     json.dump(d, f, indent=2)
     f.flush()
@@ -172,25 +172,65 @@ tabs_merge_py_file() {  # emits path to a temp .py with TABS_MERGE_PY
 
 die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 
-# --- version comparison (POSIX, no sort -V: BSD sort lacks it) -------------------
-# version_ge A B -> 0 si A >= B. Compara componente a componente en numerico.
-version_ge() {
-  awk -v a="$1" -v b="$2" 'BEGIN{
-    na = split(a, A, "."); nb = split(b, B, ".")
-    n = (na > nb) ? na : nb
-    for (i = 1; i <= n; i++) {
-      x = A[i] + 0; y = B[i] + 0
-      if (x > y) { exit 0 }
-      if (x < y) { exit 1 }
-    }
-    exit 0
-  }'
+# tabs_json_path -> prints the ABSOLUTE path of the active TUI's tabs.json.
+# SINGLE SOURCE of the resolution (DRY): before, darwin/tui-detect discovered
+# the channel by glob and honored XDG_STATE_HOME, while linux/wsl/windows
+# guessed "latest" and hardcoded ~/.local/state — 8 sites that could write a
+# tab into a channel the TUI never reads. The adapters only decide the lock
+# mechanism.
+# Exit 4 = no TUI with storage (the caller reports no-tui).
+tabs_json_path() {
+  SR=${OPENCODE_STATE_ROOT:-}
+  if [ -z "$SR" ] && command -v opencode >/dev/null 2>&1; then
+    SR=$(opencode debug paths state 2>/dev/null | head -1)
+  fi
+  [ -n "$SR" ] || SR="${XDG_STATE_HOME:-$HOME/.local/state}/opencode"
+  if [ -n "${OPENCODE_TUI_CHANNEL:-}" ] && [ -f "$SR/$OPENCODE_TUI_CHANNEL/tui/tabs.json" ]; then
+    printf '%s\n' "$SR/$OPENCODE_TUI_CHANNEL/tui/tabs.json"; return 0
+  fi
+  for c in "$SR"/*; do
+    [ -d "$c" ] || continue
+    if [ -f "$c/tui/tabs.json" ]; then printf '%s\n' "$c/tui/tabs.json"; return 0; fi
+  done
+  return 4
 }
-version_major() { printf '%s' "${1#v}" | cut -d. -f1 | tr -dc '0-9'; }
 
+# pool_list -> "ordinal<TAB>name<TAB>idle|running<TAB>slug" lines of the project.
+# The pool is the set of project sessions titled "[NN] Name". The ordinal is
+# its stable identity: it survives runs and allows INCREMENTAL scaling
+# (reuse the deployed ones, create only the missing delta).
+pool_list() {
+  AUTH=$(auth_flag 2>/dev/null || printf '')
+  # SINGLE SOURCE of the pool: one /api/session fetch for whoever needs
+  # workers (pool, dedup, init-run). Before, pool_list and find_dedup did the
+  # same fetch separately and the reuse path repeated the call.
+  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
+  [ -n "$RESP" ] || return 3
+  # Columns: ordinal, name, state, slug, sessionID, output
+  printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
+    awk -v d="$PROJ_DIR" '
+      function slug(s, x) { x = s; sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
+      match($0,/"directory":"[^"]+"/){dd=substr($0,RSTART+13,RLENGTH-14)}
+      match($0,/"title":"\[[0-9]+\] [^"]*"/){
+        tt=substr($0,RSTART+9,RLENGTH-10)
+        ord=tt; sub(/^\[/,"",ord); sub(/\].*/,"",ord)
+        nm=tt; sub(/^\[[0-9]+\][ \t]/,"",nm)
+        st="running"; if (match($0,/"idle":[0-9]+/)) st="idle"
+        sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
+        out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
+        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\n", ord+0, nm, st, slug(tt), sid, out
+      }' | sort -n
+}
+
+# pool_max_ordinal -> highest deployed ordinal (0 if the pool is empty).
+pool_max_ordinal() {
+  pool_list | awk -F'\t' 'BEGIN{m=0}{if($1+0>m)m=$1+0}END{print m}'
+}
+
+# --- version comparison (POSIX, no sort -V: BSD sort lacks it) -------------------
 # --- naming convention (single source of truth; DRY) -------------------------------
 # Pattern: "[NN] Name" — two-digit ordinal, space, human name. Examples:
-#   [00] Orquestador        root / orchestrator
+#   [00] Orchestrator       root / orchestrator
 #   [10] Vermithrax         worker 1
 #   [20] Glacielle          worker 2
 #   [11] Saphira            sub-agent of worker 1
@@ -206,7 +246,7 @@ title_normalize() {
   printf '%s' "$2" | awk -v ord="$1" '
     BEGIN { n = ord + 0; if (n < 0) n = 0; s = sprintf("%02d", n) }
     { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
-    { sub(/^\[[0-9]+\][ \t]*/, "") }        # quita el ordinal previo
+    { sub(/^\[[0-9]+\][ \t]*/, "") }        # strips the previous ordinal
     { print "[" s "] " $0 }
   '
 }
@@ -241,30 +281,30 @@ worker_list() {
       if (!has) { n += 1; ord = n; ordtxt = sprintf("%02d", n) }
       else if (ord > n) n = ord
       if (line == "") next
-      # El ordinal 00 esta reservado a la raiz del orquestador. Un worker no
-      # puede ocuparlo, ni siquiera explicitamente: init-run crea la raiz
-      # siempre, y dos ranuras [00] harian ambigua la identidad del run.
+      # The 00 ordinal is reserved for the orchestrator root. A worker cannot
+      # take it, not even explicitly: init-run always creates the root, and two
+      # [00] slots would make the run identity ambiguous.
       if (ordtxt + 0 == 0) { n = (n > 0 ? n : 1); ord = n; ordtxt = sprintf("%02d", n) }
       key = "[" ordtxt "] " line
-      # Mismo criterio que find_dedup: el slug ignora el ordinal, asi que
-      # "Vermithrax" y "[01] Vermithrax" se reconocen como el mismo worker.
+      # Same criterion as find_dedup: the slug ignores the ordinal, so
+      # "Vermithrax" and "[01] Vermithrax" are recognized as the same worker.
       if (seen[slug(key)]++) next
       print key
     }'
 }
 
-# --- creacion de sesiones (compartido por ensure-root y create-worker; DRY) ----
-# session_body TITLE AGENT MODEL -> JSON para POST /api/session (nada quemado)
-session_body() {  # $1=title $2=agent $3=model(id@prov|vacio)
+# --- session creation (shared by ensure-root and create-worker; DRY) -----------
+# session_body TITLE AGENT MODEL -> JSON for POST /api/session (nothing hardcoded)
+session_body() {  # $1=title $2=agent $3=model(id@prov|empty)
   _t=$(printf '%s' "$1" | json_escape); _d=$(printf '%s' "$PROJ_DIR" | json_escape)
   _a="${2:-build}"; _m="$3"
   MID="${_m%@*}"; MPROV="${_m#*@}"
   if [ -z "$_m" ] || [ "$MID" = "$MPROV" ]; then
-    # La clave del cache es `model_default` (la que escribe preflight.sh).
-    # Antes se leia `default_model`, un nombre que no existia en ningun sitio:
-    # toda sesion creada por el script quedaba con model {id:"",providerID:""}
-    # y al enviarle el prompt no habia modelo con el que inferir -> 0 tokens y
-    # outcome=failed. Se acepta el nombre viejo como fallback por caches viejos.
+    # The cache key is `model_default` (the one preflight.sh writes). Before,
+    # `default_model` was read — a name that existed nowhere: every session
+    # created by the script ended up with model {id:"",providerID:""} and,
+    # when the prompt was sent, there was no model to infer with -> 0 tokens
+    # and outcome=failed. The old name is accepted as a fallback for old caches.
     D=$(cache_get model_default)
     [ -n "$D" ] || D=$(cache_get default_model)
     MID="${D%@*}"; MPROV="${D#*@}"
@@ -273,68 +313,63 @@ session_body() {  # $1=title $2=agent $3=model(id@prov|vacio)
     "$_t" "$_a" "$MID" "$MPROV" "$_d"
 }
 
-# find_dedup TITLE -> "id out" si existe sesion con ese titulo (comparado por
-# slug) en el proyecto; vacio si no hay match.
+# find_dedup TITLE -> "id out" if a session with that title exists (compared
+# by slug) in the project; empty if there is no match.
 #
-# El slug ignora el ordinal [NN] a proposito. "Vermithrax" y "[01] Vermithrax"
-# son el MISMO worker: si el slug incluyera los corchetes, buscar por nombre
-# nunca encontraria la sesion numerada y init-run creaba duplicados. El ordinal
-# es decoracion de orden, la identidad es el nombre.
+# The slug deliberately ignores the [NN] ordinal. "Vermithrax" and
+# "[01] Vermithrax" are the SAME worker: if the slug included the brackets,
+# searching by name would never find the numbered session and init-run
+# created duplicates. The ordinal is ordering decoration; the identity is the
+# name.
 find_dedup() {
-  AUTH=$(auth_flag 2>/dev/null || printf '')
-  # El fetch va FUERA del pipeline: el rc de un pipe es el del ultimo comando
-  # (awk), de modo que un fallo HTTP producia salida vacia + rc=0,
-  # indistinguible de "no hay sesion" -> dedup_guard creaba duplicados en
-  # silencio. Sin respuesta no hay match: se devuelve 3 para que el llamador
-  # falle cerrado en lugar de inventar.
-  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
-  [ -n "$RESP" ] || return 3
-  printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v d="$PROJ_DIR" -v t="$1" \
-      'function slug(s, x) { x = s; sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
-       BEGIN{t = slug(t)}
-       match($0,/"directory":"[^"]+"/){dd=substr($0,RSTART+13,RLENGTH-14)}
-       match($0,/"title":"[^"]+"/){tt=slug(substr($0,RSTART+9,RLENGTH-10))}
-       {if(dd==d&&tt==t){match($0,/"id":"ses_[^"]+"/);id=substr($0,RSTART+6,RLENGTH-7);
-        match($0,/"output":[0-9]+/);o=(RSTART?substr($0,RSTART+9,RLENGTH-9):0);
-        print id, o; exit}}'
+  # Thin filter over pool_list (SINGLE SOURCE of the fetch: DRY). Returns the
+  # "id out" of the session whose title matches by slug ignoring the ordinal —
+  # "Vermithrax" finds "[01] Vermithrax" — or nothing if there is no match.
+  # rc 3 = the pool could not be queried: the caller must fail closed.
+  POOL=$(pool_list) || return 3
+  printf '%s\n' "$POOL" | awk -F'\t' -v t="$1" '
+      function slug(s, x) { x = s; sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
+      BEGIN { t = slug(t) }
+      $4 == t { print $5, $6; exit }'
 }
 
-# dedup_guard TITLE: anti-pisoton unico para ensure-root y create-worker.
-# Se invoca DENTRO de $( ) en los llamadores: nunca usa die aqui (moriria solo
-# la subshell y el llamador crearia igual). Contrato de salida:
-#   0 + stdout "worker_id=..." -> sesion inerte reusada (llamador la usa).
-#   1 -> no hay match (ni --force-new): crear nueva.
-#   2 + stdout "COLLISION out=N" -> titulo con trabajo previo: el LLAMADOR die.
+# dedup_guard TITLE: single anti-overwrite guard for ensure-root and create-worker.
+# It is invoked INSIDE $( ) by the callers: never uses die here (only the
+# subshell would die and the caller would still create the session). Output
+# contract:
+#   0 + stdout "worker_id=..." -> inert session reused (the caller uses it).
+#   1 -> no match (nor --force-new): create a new one.
+#   2 + stdout "COLLISION out=N" -> title with prior work: the CALLER dies.
 dedup_guard() {
   [ "${FORCE_NEW:-0}" -eq 1 ] && return 1
   HIT=$(find_dedup "$1"); DRC=$?
-  # rc 3 = no se pudo consultar el catalogo de sesiones. Tratarlo como
-  # "no hay match" era exactamente la puerta de los duplicados: si la API
-  # falla, NO se crea la sesion y se para el run.
+  # rc 3 = the session catalog could not be queried. Treating it as "no
+  # match" was exactly the door to duplicates: if the API fails, the session
+  # is NOT created and the run stops.
   [ "$DRC" -eq 3 ] && return 3
   [ -n "$HIT" ] || return 1
   EX_ID=${HIT%% *}; EX_OUT=${HIT#* }
   if [ "${EX_OUT:-0}" = "0" ]; then
-    printf 'worker_id=%s\ndedup=1 sesion-inerte-reusada\n' "$EX_ID"
+    printf 'worker_id=%s\ndedup=1 inert-session-reused\n' "$EX_ID"
     return 0
   fi
   printf 'COLLISION out=%s\n' "$EX_OUT"
   return 2
 }
 
-# post_new_session BODY -> emite worker_id=/location=/parentID=null (validado)
+# post_new_session BODY -> emits worker_id=/location=/parentID=null (validated)
 post_new_session() {
   AUTH=$(auth_flag 2>/dev/null || printf '')
-  RESP=$(http_post_json "$(cache_get endpoint)/api/session" "$1") || die 'POST /api/session fallo'
+  RESP=$(http_post_json "$(cache_get endpoint)/api/session" "$1") || die 'POST /api/session failed'
   ID=$(printf '%s' "$RESP" | json_get_field id)
-  # Validar el id era lo que faltaba: sin este check un POST "ok" con respuesta
-  # sin id imprimia worker_id= vacio como hecho validado, y el llamador cacheaba
-  # una raiz vacia retornando 0 (sesion inexistente creida creada).
-  [ -n "$ID" ] && [ "${ID#ses_}" != "$ID" ] || die 'POST /api/session no devolvio un sessionID ses_*; no se creo sesion utilizable'
+  # Validating the id was the missing piece: without this check a "ok" POST
+  # whose response lacked an id printed an empty worker_id= as validated, and
+  # the caller cached an empty root returning 0 (nonexistent session believed
+  # created).
+  [ -n "$ID" ] && [ "${ID#ses_}" != "$ID" ] || die 'POST /api/session returned no ses_* sessionID; no usable session was created'
   PARENT=$(printf '%s' "$RESP" | json_get_field parentID)
   LOC=$(printf '%s' "$RESP" | json_get_field directory)
-  [ -z "$PARENT" ] || [ "$PARENT" = "null" ] || die "parentID esperado null; obtuve $PARENT"
+  [ -z "$PARENT" ] || [ "$PARENT" = "null" ] || die "expected null parentID; got $PARENT"
   [ "$LOC" = "$PROJ_DIR" ] || die "location mismatch: $LOC != $PROJ_DIR"
   printf 'worker_id=%s\nlocation=%s\nparentID=null\n' "$ID" "$LOC"
 }

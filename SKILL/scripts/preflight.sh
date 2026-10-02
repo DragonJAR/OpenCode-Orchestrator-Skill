@@ -31,10 +31,10 @@ if [ -z "$URL" ] && [ -f "$REG" ]; then
   URL=$(awk 'match($0,/"url":"https?:[^"]+/){print substr($0,RSTART+7,RLENGTH-7); exit}' "$REG" | tr -d '\\')
   VERSION=$(awk 'match($0,/"version":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}' "$REG")
 fi
-[ -n "$URL" ] || { printf '%s\n' "ERROR: no endpoint (CLI sin servicio activo ni $REG)"; exit 1; }
+[ -n "$URL" ] || { printf '%s\n' "ERROR: no endpoint (CLI with no active service nor $REG)"; exit 1; }
 case "$URL" in
   http://127.0.0.1*|http://localhost*|https://*) ;;
-  *) printf '%s\n' "ERROR: endpoint no loopback/https: rechazado"; exit 1 ;;
+  *) printf '%s\n' "ERROR: non-loopback/https endpoint: rejected"; exit 1 ;;
 esac
 printf 'endpoint=%s\n' "$URL"
 
@@ -54,7 +54,7 @@ printf 'version=%s\nserver_pid=%s\n' "$VERSION" "${PID:-unknown}"
 SCHEMA=$(curl -s -m 10 $AUTH "$URL/openapi.json" | tr -d ' \n' | awk 'match($0,/"openapi":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
 case "$SCHEMA" in
   3.*) printf 'openapi=%s\n' "$SCHEMA" ;;
-  *) printf '%s\n' "ERROR: /openapi.json no es un esquema valido (HTML o vacio)"; exit 1 ;;
+  *) printf '%s\n' "ERROR: /openapi.json is not a valid schema (HTML or empty)"; exit 1 ;;
 esac
 
 # 4) canonical location + projectID for DIR (deepObject query)
@@ -79,35 +79,35 @@ printf 'model_default=%s@%s\n' "${MID:-none}" "${PROV:-none}"
 if [ -n "${OPENCODE_SESSION_ID:-}" ]; then
   printf 'root_session_hint=%s (env)\n' "$OPENCODE_SESSION_ID"
   if [ -n "${ORCHESTRATE_CACHE_DIR:-}" ]; then
-    # Cachea la raiz del orquestador: init-run la REUSA en vez de intentar crear
-    # otra, lo que colisionaba con la sesion viva del orquestador (fail-closed
-    # por colision y el run abortaba sin haber hecho nada).
+    # Caches the orchestrator root: init-run REUSES it instead of trying to
+    # create another one, which collided with the live orchestrator session
+    # (fail-closed on collision and the run aborted having done nothing).
     printf '%s\n' "$OPENCODE_SESSION_ID" > "$ORCHESTRATE_CACHE_DIR/root_session_hint" 2>/dev/null || :
   fi
 else
   printf '%s\n' "root_session_hint=none (orchestrator is external; create a root session or record TUI session)"
 fi
 
-# 7b) TUI/tabs gate (recipe-tui-tabs.md §3/§6). La gate pasa a ser un DATO, no un
-# juicio del orquestador: init-run decide solo y su motivo queda en la salida.
+# 7b) TUI/tabs gate (recipe-tui-tabs.md §3/§6). The gate becomes DATA, not an
+# orchestrator judgment: init-run decides on its own and its reason stays in the output.
 TUI_DETECT="$SELF_DIR/os/tui-detect.sh"
 if [ -f "$TUI_DETECT" ]; then
-  # El pin es del detector (major de la rama) y solo suyo: pasar aqui una
-  # version con minor/patch lo hacia fallar con exit 2, y el 2>/dev/null
-  # convertia ese error en una gate vacia. Un solo dueno del pin (DRY).
+  # The pin belongs to the detector (branch major) and only to it: passing a
+  # version with minor/patch here made it fail with exit 2, and the
+  # 2>/dev/null turned that error into an empty gate. One single pin owner (DRY).
   TUI_OUT=$(sh "$TUI_DETECT" "$CANON" 2>/dev/null)
   if [ -z "$TUI_OUT" ]; then
-    printf '%s\n' 'gate=blocked' 'gate_reason=tui-detect.sh no devolvio salida; ejecuta sh os/tui-detect.sh para ver el error'
+    printf '%s\n' 'gate=blocked' 'gate_reason=tui-detect.sh returned no output; run sh os/tui-detect.sh to see the error'
   else
     printf '%s\n' "$TUI_OUT" | grep -E '^(tui_pids|tui_cwd|tui_cwd_match|tui_channel|tabs_json|tui_version|version_ok|gate|gate_reason)='
   fi
 else
-  printf '%s\n' 'gate=blocked' 'gate_reason=tui-detect.sh ausente en el paquete'
+  printf '%s\n' 'gate=blocked' 'gate_reason=tui-detect.sh missing from the package'
 fi
 
-# 8) cache opcional para orchestrate.sh (secret solo a archivo chmod 600; nunca a stdout)
+# 8) optional cache for orchestrate.sh (secret only to a chmod 600 file; never to stdout)
 if [ -n "${ORCHESTRATE_CACHE_DIR:-}" ]; then
-  mkdir -p "$ORCHESTRATE_CACHE_DIR" 2>/dev/null || { printf '%s\n' "ERROR: no puedo crear cache dir" >&2; exit 1; }
+  mkdir -p "$ORCHESTRATE_CACHE_DIR" 2>/dev/null || { printf '%s\n' "ERROR: cannot create cache dir" >&2; exit 1; }
   printf '%s\n' "$URL"      > "$ORCHESTRATE_CACHE_DIR/endpoint"
   printf '%s\n' "$VERSION"  > "$ORCHESTRATE_CACHE_DIR/version"
   printf '%s\n' "${PID:-}"  > "$ORCHESTRATE_CACHE_DIR/server_pid"
@@ -119,7 +119,7 @@ if [ -n "${ORCHESTRATE_CACHE_DIR:-}" ]; then
     printf '%s\n' "$PW" > "$ORCHESTRATE_CACHE_DIR/auth_password"
     chmod 600 "$ORCHESTRATE_CACHE_DIR/auth_password" 2>/dev/null || :
   fi
-  # Cachea la gate de tabs: init-run la lee y decide sin pedir --tui-cwd.
+  # Caches the tabs gate: init-run reads it and decides without asking for --tui-cwd.
   if [ -f "$TUI_DETECT" ]; then
     printf '%s\n' "$TUI_OUT" | grep -E '^gate='          > "$ORCHESTRATE_CACHE_DIR/tabs_gate" 2>/dev/null || :
     printf '%s\n' "$TUI_OUT" | grep -E '^tui_cwd='        > "$ORCHESTRATE_CACHE_DIR/tabs_cwd" 2>/dev/null || :
