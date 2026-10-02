@@ -10,7 +10,7 @@ El agente del worker raíz se selecciona según el contrato del endpoint que cre
 |---|---|---|
 | `build` | `primary` | Implementación en sesión principal |
 | `plan` | `primary` | Planificación en sesión principal |
-| `general` | `subagent` | Trabajo de varios pasos con herramientas amplias; no anida otros subagents |
+| `general` | `subagent` | Trabajo de varios pasos con herramientas amplias |
 | `explore` | `subagent` | Lectura y exploración sin edición: no lo uses para una tarea cuyo `output_path` deba escribirse |
 
 Para un subagent que debe escribir su `output_path` usa `general` (acceso amplio a herramientas; que pueda editar en tu instancia `requiere verificación` en el catálogo y los permisos efectivos) u otro agente cuya política efectiva permita editar ese scope; o define que el worker escribe esa salida a partir del informe de un `explore`. Estos nombres son referencias documentales, no prueba de disponibilidad ni de permisos. Confirma el ID y su modo en el catálogo activo. Para cada worker prepara al menos dos tareas subagent distintas y agentes válidos para ellas; no intentes lanzar `build` o `plan` como hijo salvo que la instancia los publique con modo permitido. [Agents V2](https://opencode.ai/v2/docs/agents), [Tools V2](https://opencode.ai/v2/docs/tools/)

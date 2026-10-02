@@ -30,7 +30,7 @@ No inventes nombres de herramientas, parámetros, rutas, notificaciones ni IDs. 
 ## Paso 3: Confirmar acceso, servidor e identidad
 
 - Confirma autorización y el endpoint que se usará. En clientes locales, registra `shared-default`, `explicit-server` o `standalone` según lo observado; no registres credenciales.
-- Consulta `/api/info`, `/api/location` y `/openapi.json` únicamente cuando la instancia activa los documente. Registra `observed_id`, versión, `directory`, `projectID` y `subpath` canónicos en el ledger; si el validador ve el workspace con otra ruta (servidor Windows/UNC, Git Bash, WSL), registra también `directory_client` (ver [ledger-template.md](ledger-template.md#esquema-único)).
+- Consulta `/openapi.json` para descubrir el contrato, y `/api/info` y `/api/location` únicamente si el esquema activo los publica. Registra `observed_id`, versión, `directory`, `projectID` y `subpath` canónicos en el ledger; si el validador ve el workspace con otra ruta (servidor Windows/UNC, Git Bash, WSL), registra también `directory_client` (ver [ledger-template.md](ledger-template.md#esquema-único)).
 - Comprueba el `sessionID` y `parentID` nativos de la sesión actual del orquestador. `run.root_session` representa esa sesión, no una sesión worker.
 - Cada worker raíz nuevo debe recibir `run.location.directory` como argumento explícito. Para una hija, aplica la [regla única de ubicación de hijas](subagent-contract.md#regla-única-de-ubicación-de-hijas). Después de crear toda sesión, consulta su identidad/location real y exige igualdad exacta con `run.location.directory` antes de enviar o contar trabajo.
 - **Solo si el usuario pidió tabs:** una tab solo es una vista del cliente. Después de crear la sesión, expónla por la API local de tabs del CLI plugin o el estado `tabs.json` únicamente si el contrato/esquema de la versión activa lo confirma. Comprueba que la TUI presenta el `sessionID` esperado y usa `run.location.directory` como su cwd; la creación por API no garantiza esta exposición. Consulta la [receta local](recipe-tui-tabs.md), no inventes rutas ni claves, y no uses la tab como identidad de sesión o `parentID`.
@@ -42,7 +42,7 @@ No inventes nombres de herramientas, parámetros, rutas, notificaciones ni IDs. 
 El DAG tiene dos niveles de ejecución además del orquestador:
 
 1. El orquestador asigna cada unidad de trabajo a una tarea `worker_session` nueva, con `parent_task_id: null` y `parentID: null`.
-2. Cada worker, excluido el orquestador, define al menos dos tareas hijas útiles y las ejecuta como sesiones `subagent` distintas. Puede repetir el mismo `agent_id`; para el mínimo cuentan dos `sessionID` confirmados, no dos nombres de agente ni dos continuaciones de una sesión.
+2. Cada worker, excluido el orquestador, ejecuta al menos dos tareas hijas útiles preautorizadas por el orquestador, como sesiones `subagent` distintas. Puede repetir el mismo `agent_id`; para el mínimo cuentan dos `sessionID` confirmados, no dos nombres de agente ni dos continuaciones de una sesión.
 3. Los subagents no necesitan crear nietos. No afirmes el mínimo si falló la creación de hijos o si no hay dos IDs distintos.
 
 Antes de enviar el prompt de trabajo, el orquestador registra en el ledger al menos dos filas `subagent` preautorizadas por worker, cada una con `task_id`, scope, `output_path` y `criterion`; completa `parentID` con el `sessionID` real del worker y `location_directory` con `run.location.directory`. Incluye esas filas en el prompt. El worker ejecuta solo las tareas/scope autorizados y no escribe el ledger. El orquestador lee los resultados por la capacidad confirmada de esa sesión; no se presupone un canal de mensajes entre sesiones raíz independientes. Un handshake dinámico solo se usa si preflight confirma ida y vuelta. Si el worker necesita cambiar una tarea o scope, se detiene y pide actualización por la vía confirmada; el orquestador actualiza el ledger antes de enviar un prompt actualizado.
@@ -53,18 +53,33 @@ Antes de enviar el prompt de trabajo, el orquestador registra en el ledger al me
 | Scopes y timeouts | Un hijo recibe un subconjunto explícito del scope del worker; solapes, escritor padre y timeout: [regla única](agents-and-safety.md#presupuesto-de-escritura-y-scopes). |
 | Capacidad | Serializa según la capacidad observada y las dependencias reales; `run.max_sessions_in_flight` solo con límite real y procedencia en `notas` ([ledger-template.md](ledger-template.md#límite-opcional-max_sessions_in_flight)). |
 
-Declara las rutas relativas a `run.location.directory`; comprueba que cada salida esté contenida en el scope de escritura asignado. Cada tarea, de ambos tipos, lleva `task_kind`, `parent_task_id`, `parentID` nativo y `location_directory` según el contrato schema 3 de [SKILL.md](../SKILL.md#identidad-y-ledger).
+Declara las rutas relativas a la raíz del workspace (resueltas contra `run.location.directory_client` o, si falta, `run.location.directory`; ver [ledger-template.md](ledger-template.md#esquema-único)); comprueba que cada salida esté contenida en el scope de escritura asignado. Cada tarea, de ambos tipos, lleva `task_kind`, `parent_task_id`, `parentID` nativo y `location_directory` según el contrato schema 3 de [SKILL.md](../SKILL.md#identidad-y-ledger).
 
 ## Paso 5: Registrar y crear sesiones worker
 
-El orquestador crea una fila por worker antes de despachar: `task_kind: worker_session`, `parent_task_id: null`, `parentID: null`, `location_directory` igual a `run.location.directory`, `source_sessionID: null`, `before_messageID: null`, objetivo, dependencias, scope, salida y criterio. Las filas de hijos nuevos también usan ambos campos en `null`; solo un fork documentado puede registrar sus IDs de origen/corte. Guarda la sesión actual del orquestador por separado en `run.root_session`.
+El orquestador crea una fila por worker antes de despachar: `task_kind: worker_session`, `parent_task_id: null`, `parentID: null`, `location_directory` igual a `run.location.directory`, `source_sessionID: null`, `before_messageID: null`, objetivo, dependencias, scope, salida y criterio. Las filas de hijos nuevos también llevan `source_sessionID: null` y `before_messageID: null`; solo un fork documentado puede registrar sus IDs de origen/corte. Guarda la sesión actual del orquestador por separado en `run.root_session`.
+
+**Ruta por defecto: los scripts deterministas.** No montes este paso a mano — la navaja suiza hace el trabajo repetible y sus decisiones de gate ya están centralizadas.
+
+```sh
+sh scripts/orchestrate.sh preflight "$PWD"                                  # P2 + gate de tabs
+sh scripts/orchestrate.sh init-run --worker "Vermithrax" --worker "Glacielle" # raíz [00] + workers + tabs
+```
+
+`init-run` crea la raíz `[00] Orquestador`, crea cada worker con su `sessionID` verificado, aplica la numeración correlativa de la [nomenclatura](naming-convention.md) y expone las tabs cuando la gate dice `ready`. Un `--worker` por sesión: **el espacio no puede ser delimitador de lista** porque es parte del título. También acepta `--workers "A, B, C"`.
+
+Usa `create-worker` paso a paso solo cuando de verdad lo necesites: crear un worker suelto, forzar uno nuevo con `--force-new`, o reutilizar el preflight cacheado. Cada llamada suelta es un viaje extra, y el flujo `create-worker` en bucle deja la exposición de tabs sin hacer.
+
+Contrasta `init-run` con el ledger: los `sessionID` que emite son la identidad real. El dedup es **por nombre, ignorando el ordinal**, así que `--worker "Vermithrax"` reusa `[01] Vermithrax` en vez de crear un duplicado.
+
+Si `init-run` responde `init-run: INCOMPLETO` y sale con código 1, algún worker no se creó: **no lo trates como éxito**. Reejecuta `init-run` con los mismos títulos; el dedup reutiliza lo ya creado y completa lo que falte.
 
 Para cada worker, en este orden:
 
 1. Registra estado local `pending` y luego `launching` antes de llamar la capacidad exacta descubierta.
 2. Crea una sesión raíz con `run.location.directory` explícito. Comprueba el `sessionID`, que `parentID` nativo sea `null` y que la ubicación real coincida exactamente.
 3. Antes de enviar el prompt, registra al menos dos filas `subagent` preautorizadas: `task_id` nuevos, `parent_task_id` igual al worker, `parentID` igual al `sessionID` nativo comprobado, `location_directory` igual a `run.location.directory`, `sessionID: null`, scope, salida y criterio. No uses un estado ficticio de autorización: las filas empiezan `pending`.
-4. **Solo si el usuario pidió tabs**, expón la sesión como tab TUI (si no las pidió, omite este paso y marca la tab "no verificada") mediante la API de tabs del CLI plugin; el estado local `tabs.json` es un fallback no soportado por defecto, sujeto al gate duro de [SKILL.md](../SKILL.md#decision-gates), solo si la versión activa confirma esa ruta y esquema. Comprueba que la TUI muestra el `sessionID` worker y la ubicación canónica, siguiendo la [receta local](recipe-tui-tabs.md). La tab no sustituye los IDs.
+4. Expón la sesión como tab TUI por la vía del [gate de tabs de SKILL.md](../SKILL.md#decision-gates). Con TUI local activa, la exposición aditiva de `tabs.json` es la ruta por defecto ([receta §6](recipe-tui-tabs.md)) y `init-run` ya la hace; si la gate no está `ready`, el run continúa sin tabs y se marca "no verificada". Solo con autorización explícita del operador pasas `--force-tabs`. Comprueba que la TUI muestra el `sessionID` worker y la ubicación canónica. La tab no sustituye los IDs.
 5. Envía el prompt autocontenido [de worker](prompt-templates.md#1-despacho-de-worker-session), incluyendo las filas y sus scopes/criterios exactos.
 6. Registra `sessionID`, identidad comprobada y estado nativo observado. Espera y lee el resultado mediante la capacidad identificada.
 
@@ -74,7 +89,7 @@ No uses `subagent` para crear una sesión worker raíz ni para fingir una tab. S
 
 Cada prompt de worker incluye al menos dos tareas útiles, autocontenidas y verificables ya registradas por el orquestador. El worker no altera sus identidades, criterios ni scopes. Para cada hija preautorizada:
 
-1. Usa un `task_id` nuevo, `task_kind: subagent`, `parent_task_id` igual al `task_id` del worker, `parentID` igual al `sessionID` nativo confirmado del worker y `location_directory` igual a `run.location.directory`.
+1. Cada hija usa el `task_id` de su fila preautorizada (registrado como ID nuevo por el orquestador), `task_kind: subagent`, `parent_task_id` igual al `task_id` del worker, `parentID` igual al `sessionID` nativo confirmado del worker y `location_directory` igual a `run.location.directory`.
 2. Lanza una sesión hija nueva por la capacidad `subagent` que el catálogo activo permita, con la ubicación según la [regla única](subagent-contract.md#regla-única-de-ubicación-de-hijas). Comprueba el `sessionID`, `parentID` real y location antes de contarla.
 3. Usa un `agent_id` del catálogo activo. Se permite repetirlo para una sesión distinta.
 4. Dale solo el scope hijo asignado, los datos mínimos, el formato de salida, el criterio y la comprobación requerida.
@@ -94,7 +109,7 @@ Si una tarea o scope preautorizados necesitan cambiar, el worker detiene ese tra
 
 El gate de `verified` de un worker (mínimo de dos subagents distintos, `parentID` y ubicación correctos, `subagent_results_integrated` con los `task_id` de los hijos verificados) está definido solo en [ledger-template.md](ledger-template.md#gate-de-worker-verificado). Aquí el worker lee los entregables, comprueba cada `criterion`, resuelve contradicciones por evidencia y deja una síntesis que integra todos los resultados verificados; el orquestador inspecciona el reporte y los artefactos del worker antes de cerrar su tarea.
 
-- La mera existencia de `output_path` o una notificación terminal no prueba el criterio.
+- La mera existencia de `output_path` o una notificación terminal no prueba el criterio; un mensaje final vacío tampoco prueba no-ejecución (un turno puede cerrar tras tool-calls sin texto): verifica artefactos y `git diff` antes de diagnosticar.
 - La evidencia enlazada sigue el [formato canónico](ledger-template.md#formato-de-evidencia); el padre inspecciona el artefacto, no solo la forma de la nota.
 - Un `blocked`, `failed`, `interrupted`, `cancelled`, `partial`, `launching`, `outcome-unknown`, `running`, `awaiting-approval` o `completed` conserva su resultado real; ninguno satisface por sí solo el gate `verified`.
 - La síntesis separa hechos del runtime, inferencias, convenciones locales, sesiones/IDs, hijos faltantes y límites pendientes.

@@ -26,14 +26,23 @@ run:
     tabs_scope: "current-client"
     active_tab_hint: "optional-ui-hint"
   min_subagents_per_worker: 2
+
+## Bloque opcional `run.client`
+
+Los validadores aceptan (y la navaja `attach-tabs` escribe) un bloque opcional `run.client` con dos campos:
+
+- `tabs_scope`: `"global"` o `"current-client"`; determina si la tab se publica en `tabs.json` global o bajo la clave cwd del TUI.
+- `active_tab_hint`: string libre para que el TUI muestre una pestaña activa (no usado por los validadores).
+
+Cuando este bloque aparece, el validador acepta las claves `tabs_scope` y `active_tab_hint` y rechaza cualquier otra clave bajo `client`. Si está ausente, los validadores no lo exigen. La documentación canónica del mecanismo de tabs está en `recipe-tui-tabs.md`.
 tasks: []
 ~~~~
 
-- `mode` es una convención del ledger: `shared-default`, `explicit-server` o `standalone`. El cliente local usa el servidor compartido por usuario por defecto; `--server` elige endpoint explícito y `--standalone` inicia uno privado.
+- `mode` es una convención del ledger: `shared-default`, `explicit-server` o `standalone`. Registra lo observado (`shared-default` por defecto en cliente local); la semántica de los flags de la CLI (`--server`, `--standalone`) requiere verificación con la ayuda de tu instalación ([api-and-sessions.md](api-and-sessions.md#transporte-de-las-llamadas)).
 - `min_subagents_per_worker` debe ser exactamente `2`. `max_sessions_in_flight` es opcional y se rige por la sección [Límite opcional `max_sessions_in_flight`](#límite-opcional-max_sessions_in_flight).
 - `location.directory` es la ruta literal del servidor OpenCode tal como la devuelve `/api/location`, en cualquier forma absoluta: POSIX (`/srv/p`), unidad Windows (`C:\Users\dev\p`) o UNC (`\\host\share\p`); **en el YAML, entre comillas dobles, cada barra invertida se escribe doblada**: `"C:\\Users\\dev\\p"`, `"\\\\host\\share\\p"` (el validador decodifica `\\` a `\`; una barra simple falla con «scalar inválido»). Se copia sin transformar a `location_directory` de cada tarea y a toda creación de sesión.
 - `location.directory_client` (opcional) es la ruta del mismo workspace tal como la ve el validador (`pwd -P`): úsala cuando el servidor usa una ruta distinta de la visible en el shell (servidor Windows, UNC, montaje o mapeo distinto, Git Bash `/c/...`, WSL `/mnt/c/...`). Si falta, el validador compara `location.directory` con `pwd -P`. Los scopes relativos se resuelven contra `directory_client` (o `directory` si falta) y los scopes absolutos que cuelgan de `location.directory` se reasignan a esa base.
-- Hechos vigentes de V2: confirma endpoint, server ID y versión con `/api/info`; location con `/api/location` y `Session.Info.location`; y los IDs runtime antes de operar. Las tabs son pistas de cliente sin identidad HTTP pública. El hijo nativo es `subagent`: el permiso `subagent` del padre controla qué agentes puede lanzar; la política configurada del agente hijo rige sus herramientas; las reglas específicas de permisos de sesión se heredan al crear una sesión hija. Confirma la política efectiva en el runtime.
+- Hechos vigentes de V2: confirma identidad y location del servidor (detalle en las dos viñetas siguientes) y los IDs runtime antes de operar. Las tabs son pistas de cliente sin identidad HTTP pública. El hijo nativo es `subagent`; su política de permisos sigue la regla canónica de [agents-and-safety.md](agents-and-safety.md#reglas-de-permisos) (el permiso del padre controla qué agentes lanzar; la política del hijo rige sus herramientas; la herencia descrita es de reglas específicas de sesión, no de la política del agente).
 - Confirma `endpoint_redacted`, `observed_id` y `version` con `/api/info`; quita secretos del endpoint.
 - Confirma `directory`, `projectID` y `subpath` con `/api/location` y compáralos con `Session.Info.location`.
 - `root_session.sessionID` y `parentID` son IDs runtime confirmados de la sesión raíz del run. Los campos de cada tarea describen por separado la sesión worker o subagent y su `parentID` real.
@@ -52,7 +61,7 @@ Cada tarea usa las claves exactas mostradas en el ejemplo. `task_id`, `agent_id`
 - `dependencias`: IDs de tareas que deben quedar verificadas antes de iniciar esta tarea. No uses dependencias para representar `parent_task_id`.
 - `scope_escritura`: lista del presupuesto de escritura de la tarea. Cada scope de subagent debe quedar dentro de algún scope de escritura de su worker.
 - `criterion`: afirmación concreta que el worker propietario pueda comprobar antes de despachar o cerrar la tarea.
-- `output_path`: artefacto esperado; debe quedar dentro de al menos un `scope_escritura`.
+- `output_path`: artefacto esperado; debe quedar dentro de al menos un `scope_escritura`. `null` es válido mientras la tarea esté en `pending`/`launching`/`running`/`awaiting-approval`/`outcome-unknown` (aún no produce artefacto); el validador de cierre lo exige no nulo y existente en el disco para `verified`, y con `notas` justificativas para los terminales no verificados.
 - `evidence_refs`: lista de archivos de evidencia. Para `verified`, cada tarea subagent verificada escribe su archivo de evidencia dentro de su `scope_escritura` con criterion, result ("pass") y observed; la evidencia de un worker verificado incluye además `subagent_results_integrated` con todos sus hijos verificados que inspecciona e integra en su informe.
 - `estado`: estado local entre `pending`, `launching`, `outcome-unknown`, `running`, `awaiting-approval`, `completed`, `verified`, `blocked`, `failed`, `interrupted`, `cancelled` y `partial`.
 - `runtime_status`: valor literal observado del runtime activo o `null`; no es el estado local.
@@ -69,25 +78,27 @@ El gate canónico solo permite marcar un `worker_session` como `verified` si tie
 
 ## Scopes y orden de escritura
 
-Los scopes se comparan por componentes de ruta. Dos tareas sin relación padre-hijo cuyos scopes se solapan deben tener una dependencia DAG transitiva que las ordene; esto también aplica a siblings. Workers de primer nivel que compartan scopes deben depender en orden. Una relación worker-subagent permite que el scope del hijo esté anidado dentro del presupuesto del worker, ya que el worker coordina e integra su resultado al finalizar. Esa relación no permite escrituras simultáneas en la parte solapada: el worker espera a que el hijo termine antes de escribir ahí. Dependencias siguen siendo la única señal DAG de orden de ejecución.
+Definición canónica única en [agents-and-safety.md#presupuesto-de-escritura-y-scopes](agents-and-safety.md#presupuesto-de-escritura-y-scopes). Esta sección solo ancla la referencia: los scopes se comparan por componentes de ruta; dos tareas sin relación padre-hijo con scopes solapados necesitan una dependencia DAG transitiva (también para siblings); la relación worker↔subagent permite scope anidado pero prohíbe escritura simultánea del padre en la parte solapada.
 
 ## Límite opcional `max_sessions_in_flight`
 
-Las fuentes consultadas no publican un tope global de concurrencia de OpenCode, y la skill no define un valor por defecto: no importes un límite de otra versión ni uses `max_in_flight` (eliminado en schema 3). Añade `run.max_sessions_in_flight: N` (entero positivo) solo ante un límite real observado en la instancia activa. Si se configura, cuenta en conjunto workers y subagents en `launching`, `outcome-unknown`, `running` y `awaiting-approval`; el `outcome-unknown` y la aprobación pendiente conservan la reserva.
+Las fuentes consultadas no publican un tope global de concurrencia de OpenCode, y la skill no define un valor por defecto: no importes un límite de otra versión ni uses `max_in_flight` (eliminado en schema 3). Añade `run.max_sessions_in_flight: N` (entero positivo) solo ante un límite real observado en la instancia activa. Si se configura, cuenta en conjunto workers y subagents en `launching`, `outcome-unknown`, `running` y `awaiting-approval`; el `outcome-unknown` y la aprobación pendiente conservan la reserva. El validador admite para ambos enteros de `run` (`min_subagents_per_worker` y `max_sessions_in_flight`) el rango 1–2147483647 (tope interno).
 
 El validador solo admite el entero; no tiene un campo de procedencia en `run`. Conserva fuente, contexto del runtime, versión/instancia y fecha en `notas` de una fila `worker_session` (campo de tarea aceptado) y no inventes una clave `run.*_source`. Si no puedes dejar esa procedencia durable en un campo aceptado, omite el límite hasta ampliar esquema y validador.
 
 ## Write-ahead y reconciliación
+
+Edita el ledger con un helper programático o regenerándolo desde un modelo en memoria; las sustituciones `sed`/regex in place son fuente de corrupción (campos perdidos silenciosamente). Crear/editar:
 
 1. Crea cada fila como `pending`; completa criterio, propiedad, location, dependencias, scopes, output y `parentID` real/null según la capa.
 2. Antes de invocar un worker o subagent, escribe estado `launching` y actualiza `last_state_at`. Si configuraste `max_sessions_in_flight`, cuenta el slot en ambas capas antes de lanzar.
 3. Si no sabes si el envío tuvo efecto, registra estado `outcome-unknown` y `execution_outcome: "unknown"`. Conserva el slot y el scope; no reenvíes hasta reconciliar endpoint, location, sessionID y parentID.
 4. Al confirmar ejecución o permiso pendiente, registra estado local y runtime por separado. `running` y `awaiting-approval` cuentan contra el límite configurado; `outcome-unknown` también conserva la reserva.
 5. Al obtener resultado terminal, registra `runtime_status` literal y `execution_outcome`. Cambia a `completed`; el worker propietario aún debe inspeccionar el artefacto. Un worker no escribe en el scope de un hijo activo mientras ese hijo escribe.
-6. Solo tras comprobar `output_path` contra `criterion` y que cada `evidence_refs` exista y satisfaga el gate de evidencia (cada subagent en su `scope_escritura` con criterion/pass/observed; el worker con `subagent_results_integrated`), cambia a `verified`. El informe del worker integra los resultados verificados de sus subagents y su evidencia los enumera en `subagent_results_integrated`. Los estados `blocked`, `failed`, `interrupted`, `cancelled` y `partial` conservan el motivo en `notas`.
+6. Solo tras comprobar `output_path` contra `criterion` y que cada `evidence_refs` exista y satisfaga el [gate de evidencia](#formato-de-evidencia), cambia a `verified`. El informe del worker integra los resultados verificados de sus subagents y su evidencia los enumera en `subagent_results_integrated`. Los estados `blocked`, `failed`, `interrupted`, `cancelled` y `partial` conservan el motivo en `notas`.
 7. Un fork confirmado registra el nuevo `sessionID`, junto con `source_sessionID` y `before_messageID`. Comprueba el `/openapi.json` activo antes de llamar una ruta experimental de sesión.
 
-La documentación describe la herencia de reglas específicas de sesión al crear una hija; no la generalices a la política configurada del agente hijo ni a otros contextos. Confirma la política efectiva en el runtime.
+La herencia de reglas específicas de sesión al crear una hija está descrita en la viñeta de [Hechos vigentes de V2](#esquema-único); no la generalices a la política configurada del agente hijo.
 
 ## Ejemplo poblado de dos niveles
 
@@ -108,6 +119,9 @@ run:
   root_session:
     sessionID: "sid-root"
     parentID: null
+  client:
+    tabs_scope: "current-client"
+    active_tab_hint: "workers"
   min_subagents_per_worker: 2
 tasks:
   - task_id: "W1"
@@ -174,7 +188,7 @@ tasks:
 
 ## Formato de evidencia
 
-Cada archivo de `evidence_refs` de una tarea verificada usa un registro plano con formato YAML, con los valores base entre comillas dobles. Cada tarea `subagent` verificada escribe su archivo de evidencia dentro de su `scope_escritura` asignado con criterion, result ("pass") y observed (o incluye el bloque en su entrega para persistencia por el orquestador):
+Cada archivo de `evidence_refs` de una tarea verificada usa un registro plano con formato YAML, con los valores base entre comillas dobles. Cada tarea `subagent` verificada escribe su archivo de evidencia dentro de su `scope_escritura` asignado con criterion, result ("pass") y observed (o lo incluye en su entrega al worker, que lo integra en su informe, para que el orquestador lo persista):
 
 ~~~~yaml
 criterion: "The output records the first independent result."
@@ -191,13 +205,13 @@ observed: "Inspected W1-report.md; it compares and integrates the findings from 
 subagent_results_integrated: ["S1", "S2"]
 ~~~~
 
-El gate exige que `criterion` del registro coincida exactamente con la tarea, que `result` sea `pass` y que `observed` no esté vacío. Para un worker verificado, también exige `subagent_results_integrated` con todos sus hijos verificados. Esto registra que se inspeccionó el informe para comprobar integración; el gate de evidencia no sustituye la revisión del contenido del informe. Que exista un archivo, sin ese contenido y correspondencia, no basta.
+La extensión del archivo es la que declara `evidence_refs`: si un hijo escribió `.yaml` en lugar de `.yml`, reconcilia `evidence_refs` hacia el archivo existente (nunca reescribas el archivo del hijo; R14a). El gate exige que `criterion` del registro coincida exactamente con la tarea, que `result` sea `pass` y que `observed` no esté vacío. Para un worker verificado, también exige `subagent_results_integrated` con todos sus hijos verificados. Esto registra que se inspeccionó el informe para comprobar integración; el gate de evidencia no sustituye la revisión del contenido del informe. Que exista un archivo, sin ese contenido y correspondencia, no basta. El validador comprueba del archivo: existencia, contención en la raíz del workspace y este contenido; que quede dentro del `scope_escritura` del subagent es obligación de autoría que el script no comprueba.
 
 ## Subconjunto YAML aceptado
 
 Los scripts usan POSIX sh y awk, no una biblioteca YAML. Aceptan solo el formato ilustrado: mapa raíz con `schema_version: 3`, `run:` y `tasks:`; indentación con espacios exactos; tareas como elementos de lista bajo `tasks`; strings entre comillas dobles; `null` literal; entero positivo para `min_subagents_per_worker` y, opcionalmente, `max_sessions_in_flight`; listas flow-style. Codificación: UTF-8 sin BOM (un BOM inicial se tolera y se descarta; los acentos son válidos). Se permiten líneas vacías, comentarios de línea completa y comentarios inline (`#` precedido de espacio y fuera de comillas dobles); un valor como `null  ` o `null # raíz` equivale a `null` en ambos validadores. Se rechazan lista raíz, bloques, anchors, aliases, tabs, claves duplicadas/desconocidas, inline maps y valores o indentaciones fuera de ese subconjunto. Un ledger schema 2 recibe un error que indica la migración requerida.
 
-Los scopes y rutas relativas se resuelven desde la raíz del workspace, que es el directorio físico actual (`pwd -P`, con symlinks resueltos). Esa raíz debe coincidir léxicamente con `run.location.directory_client` o, si falta, con `run.location.directory`. Cada `location_directory` debe ser idéntico a `run.location.directory` (literal del servidor). Una ruta relativa que normalice fuera de la raíz falla. Los scopes absolutos se conservan; los que cuelgan de `run.location.directory` se reasignan a la raíz del workspace cuando `directory_client` difiere. Los scopes se comparan léxicamente por componentes de ruta; `src` se solapa con `src/a.py`, pero no con `src2`. Un subagent hereda el orden DAG de su worker: si `W2` depende (directa o transitivamente) de `W1`, los hijos de ambos árboles no se consideran paralelos; en cambio, hermanos del mismo worker o workers en paralelo con scopes solapados y sin dependencia siguen fallando. Los symlinks internos del workspace no se resuelven. Un ledger con finales de línea CRLF se acepta: ambos validadores descartan el `\r` final y los espacios finales de `run:`/`tasks:`. Los paths con espacios deben ir entre comillas dobles. Los errores de extracción del cierre indican la línea (`[FAIL] línea N: …`).
+Los scopes y rutas relativas se resuelven desde la raíz del workspace, que es el directorio físico actual (`pwd -P`, con symlinks resueltos). Esa raíz debe coincidir con `run.location.directory_client` o, si falta, con `run.location.directory`, tras la normalización de forma aplicada por el validador (mayúscula de unidad, vistas POSIX `/c/...` y colapso de `.`/`..`). Cada `location_directory` debe ser idéntico a `run.location.directory` (literal del servidor). Una ruta relativa que normalice fuera de la raíz falla. Los scopes absolutos se conservan; los que cuelgan de `run.location.directory` se reasignan a la raíz del workspace cuando `directory_client` difiere. Los scopes se comparan léxicamente por componentes de ruta; `src` se solapa con `src/a.py`, pero no con `src2`. Un subagent hereda el orden DAG de su worker: si `W2` depende (directa o transitivamente) de `W1`, los hijos de ambos árboles no se consideran paralelos; en cambio, hermanos del mismo worker o workers en paralelo con scopes solapados y sin dependencia siguen fallando. Los symlinks internos del workspace no se resuelven. Un ledger con finales de línea CRLF se acepta: ambos validadores descartan el `\r` final y los espacios finales de `run:`/`tasks:`. Los paths con espacios deben ir entre comillas dobles. Los errores de extracción del cierre indican la línea (`[FAIL] línea N: …`).
 
 Formas de ruta absoluta admitidas: POSIX, unidad Windows (`C:\x` o `C:/x`, la letra se normaliza a mayúscula) y UNC con barras invertidas (`\\host\share\x`). Recuerda escribir las barras invertidas dobladas (`"C:\\x"`, `"\\\\host\\share\\x"`) porque solo se admiten los escapes `\\` y `\"` dentro de las comillas. En rutas Windows/UNC las barras invertidas ya decodificadas se convierten a `/` para comparar; las mayúsculas/minúsculas del resto de la ruta no se normalizan. Si el workspace declarado es una unidad Windows y el shell es Git Bash, WSL o Cygwin, el validador acepta la vista POSIX `/c/x`, `/mnt/c/x` o `/cygdrive/c/x` del mismo directorio. Para rutas POSIX el comportamiento es el mismo que antes.
 
@@ -210,8 +224,8 @@ Ambos scripts son POSIX `sh` + `awk`; `validate_ledger_closed.sh` además usa `d
 | Script | Uso | Qué comprueba |
 | --- | --- | --- |
 | `scripts/validate_dag.sh` | `sh validate_dag.sh <ledger>` | Forma YAML canónica, identidad y ubicación, estados, DAG sin ciclos, scopes, límite opcional, gate de worker verificado |
-| `scripts/validate_ledger_closed.sh` | `sh validate_ledger_closed.sh [--require-evidence] [--allow-degraded] <ledger>` | Ejecuta el anterior y exige cierre: en modo estricto todas las tareas `verified`, `execution_outcome: succeeded`, evidencia con criterion/result/observed e integración; con `--allow-degraded` admite estados terminales (`verified`, `failed`, `blocked`, `partial`, `cancelled`, `interrupted`) exigiendo `notas` no vacías para los no verificados y verificando evidencia si está presente |
+| `scripts/validate_ledger_closed.sh` | `sh validate_ledger_closed.sh [--require-evidence] [--allow-degraded] <ledger>` | Ejecuta el anterior y exige cierre: en modo estricto todas las tareas `verified`, `execution_outcome: succeeded`, evidencia con criterion/result/observed e integración; con `--allow-degraded`, estados y requisitos según el párrafo «Invocación única» de abajo |
 
 `output_path` y `evidence_refs` siguen la misma regla de rutas que los scopes: `validate_ledger_closed.sh` reasigna a `directory_client` las rutas absolutas bajo `run.location.directory`, las devuelve a la vista física del shell y rechaza toda ruta (absoluta o relativa con `..`) que termine fuera de la raíz física del workspace (por ejemplo, `/etc/hosts`).
 
-**Invocación única:** `validate_ledger_closed.sh` ya ejecuta `validate_dag.sh`; para un cierre completo basta `sh scripts/validate_ledger_closed.sh --require-evidence <ledger>`. Si la corrida cerró en estados terminales degradados (`failed`, `blocked`, `partial`, `cancelled`, `interrupted`), añade `--allow-degraded`: las tareas `verified` mantienen los requisitos estrictos (`execution_outcome: succeeded`, `output_path`, `evidence_refs`), mientras que las tareas en estados terminales no verificados requieren `notas` no vacías con el motivo/causa y comprueban evidencia si está presente; los estados activos (`pending`, `launching`, `running`, `awaiting-approval`, `outcome-unknown`) siguen prohibidos al cerrar. Ejecuta `validate_dag.sh` por separado solo para validar un ledger aún abierto (en curso). Ejecútalos con el workspace como directorio actual. Códigos de salida: `0` pasa, `1` falla la validación, `2` error de uso o entorno (argumentos, ledger ilegible, `pwd -P` inválido, `awk` ausente). La última línea es `TOTAL: N passed, M failed`, con contadores reales de comprobaciones.
+**Invocación única:** `validate_ledger_closed.sh` ya ejecuta `validate_dag.sh`; para un cierre completo basta `sh scripts/validate_ledger_closed.sh --require-evidence <ledger>`. Si la corrida cerró en estados terminales degradados (`failed`, `blocked`, `partial`, `cancelled`, `interrupted`), añade `--allow-degraded`: las tareas `verified` mantienen los requisitos estrictos (`execution_outcome: succeeded`, `output_path`, `evidence_refs`), mientras que las tareas en estados terminales no verificados requieren `notas` no vacías con el motivo/causa y comprueban evidencia si está presente; los estados activos (`pending`, `launching`, `running`, `awaiting-approval`, `outcome-unknown`) siguen prohibidos al cerrar, y `completed` también: es un estado transitorio del ledger, así que toda fila debe pasar de `completed` a `verified` o a un estado terminal degradado antes de validar (el validador lo rechaza en ambos modos). Ejecuta `validate_dag.sh` por separado solo para validar un ledger aún abierto (en curso). Ejecútalos con el workspace como directorio actual. Códigos de salida: `0` pasa, `1` falla la validación, `2` error de uso o entorno (argumentos, ledger ilegible, `pwd -P` inválido, `awk` ausente). La última línea es `TOTAL: N passed, M failed`, con contadores reales de comprobaciones.

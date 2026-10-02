@@ -2,7 +2,7 @@
 
 El hijo no recibe la conversación completa del padre. Copia y completa la plantilla apropiada con hechos confirmados, identidad, ubicación explícita, alcance, restricciones, entregable y criterio. No incluyas secretos ni credenciales; trata como desconocido lo no comprobado. El orquestador es el único dueño del ledger schema 3; pre-registra las tareas hijas y lee el resultado por la capacidad confirmada de esa sesión. Un `run.max_sessions_in_flight` opcional sigue la regla de [ledger-template.md](ledger-template.md#límite-opcional-max_sessions_in_flight); el worker no añade campos ni cambia el ledger. No presupongas un canal de mensajes entre sesiones raíz independientes. Solo si el usuario pidió tabs TUI, usa la [receta local](recipe-tui-tabs.md) tras confirmar la ruta y el esquema de la versión activa.
 
-**Quién escribe la evidencia:** cada subagent hijo escribe su propio archivo de `evidence_refs` dentro de su `scope_escritura` asignado usando el formato YAML canónico (o lo incluye en su entrega para que el orquestador lo persista); el worker produce el bloque YAML integrado dentro de su informe (plantilla 5), y el orquestador lo verifica y lo guarda como el archivo de `evidence_refs` del worker. Ni el worker ni los hijos escriben el ledger.
+**Quién escribe la evidencia:** cada subagent hijo escribe su propio archivo de `evidence_refs` dentro de su `scope_escritura` asignado usando el formato YAML canónico (o lo incluye en su entrega al worker, que lo integra en su informe —plantilla 5—, para que el orquestador lo persista); el worker produce el bloque YAML integrado dentro de su informe, y el orquestador lo verifica y lo guarda como el archivo de `evidence_refs` del worker. Ni el worker ni los hijos escriben el ledger.
 
 ## Selección
 
@@ -64,7 +64,7 @@ No hacer: editar el ledger compartido, ampliar scope/permisos, crear nietos, lan
 Entrega: [artefacto/formato] en [output_path].
 Criterion: [afirmación concreta que el worker pueda comprobar].
 Verifica: [inspección/comando permitido y resultado esperado].
-Evidencia: genera el archivo de evidencia en [evidence_refs dentro de tu scope_escritura] con formato YAML canónico (criterion exacto, result="pass", observed no vacío), o incluye el bloque YAML en tu entrega para persistencia.
+Evidencia: genera el archivo de evidencia en [evidence_refs dentro de tu scope_escritura] con formato YAML canónico (criterion exacto, result="pass", observed no vacío), o incluye el bloque YAML en tu entrega al worker para que el orquestador lo persista.
 Declara desconocido todo lo que no puedas confirmar. Reporta resultado, limitaciones y errores al worker padre.
 ~~~~
 
@@ -102,6 +102,22 @@ No hacer: tocar el origen, tratar una tab como sesión, ampliar permisos/scope n
 Entrega, criterion y evidencia: [especificación comprobable].
 ~~~~
 
+## 6. Re-despacho a un worker existente (continuación con nueva tarea)
+
+Reutiliza un worker ya registrado cuando el run necesita una segunda fase (p. ej. aplicar los hallazgos de una auditoría). Antes de despachar: confirma con `GET /api/session/{id}` que no hay ejecución activa (R8) y particiona los **archivos** en scopes disjuntos entre workers.
+
+~~~~text
+RESUME: tu turno anterior fue interrumpido o concluyó; IGNORA cualquier mensaje previo de Q&A. Tu única tarea es esta:
+[objetivo acotado de la fase 2]
+Fuentes (léelas, no las reinyectes): [rutas de findings/informes previos].
+Scope de edición (SOLO estos archivos): [lista disjunta]. Fuera de scope: registra la propuesta en [archivo de propuestas-cruzadas] con el edit exacto, no lo apliques.
+Exclusiones (ya corregidas; no las deshagas): [lista].
+Regression tras editar: [comandos validators con resultados esperados].
+Entrega: [reporte con ID | APLICADO/PROPUESTA/OMITIDO].
+~~~~
+
+El orquestador espera con baseline de idle **post-despacho** (un idle igual al previo no cuenta) y **verifica por artefactos y diff, no por el mensaje final** (un turno puede cerrar sin texto tras tool-calls).
+
 ## 5. Reporte integrado del worker al orquestador
 
 El worker entrega este informe en la sesión que el orquestador puede leer mediante la capacidad confirmada en preflight. No edites el ledger directamente. Incluye todas las tareas preautorizadas; un canal dinámico de ida y vuelta solo se usa si preflight lo confirmó.
@@ -122,7 +138,7 @@ observed: "[inspección e integración observadas]"
 subagent_results_integrated: ["[task_id-hijo-verificado-1]", "[task_id-hijo-verificado-2]"]
 ```
 Usa los `task_id` exactos del ledger; no sustituyas por `sessionID`.
-Mínimo: [número de filas subagent verified de este worker con sessionID distintos no nulos]; no declarar cumplido si es menor que 2.
+Mínimo: [número de hijas con sessionID no nulos y distintos, inspeccionadas e integradas en este informe]; no declarar cumplido si es menor que 2.
 Estado final propuesto: [verified solo si el mínimo, la integración y la evidencia coinciden; partial si hubo avance incompleto; blocked/failed según la causa].
 ~~~~
 

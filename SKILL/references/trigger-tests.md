@@ -18,4 +18,4 @@ Conjunto mínimo para comprobar que la skill se activa cuando corresponde y no s
 
 - Una consulta "debe activar" que no carga la skill indica subactivación: añade al `description` la frase literal del usuario.
 - Una consulta "no debe activar" que la carga indica sobreactivación: añade o refuerza un negativo en el `description`.
-- Tras cambiar el `description`, repite las seis consultas y conserva el resultado en el historial del cambio.
+- Tras cambiar el `description`, repite como mínimo las seis consultas semilla (y el conjunto completo de 10–20 si el cambio afecta a los negativos) y conserva el resultado en el historial del cambio.

@@ -8,14 +8,34 @@ Antes de crear una sesión o delegar:
 
 - Confirma autorización e instancia con `GET /api/info`; consulta `/openapi.json` en ese mismo endpoint para versión y rutas disponibles.
 - Obtén la ubicación de `GET /api/location` y compárala con la sesión del orquestador. Fija un único `run.location.directory` canónico.
-- Si el usuario pidió ver las sesiones como tabs, comprueba que la TUI tenga tabs disponibles (`tabs.mode` no sea `off`) y que el cliente permita abrir la sesión existente y verificar la tab por `sessionID`; si no pidió tabs, una tab no verificable no bloquea (se marca "no verificada"; ver Modo degradado en [SKILL.md](../SKILL.md#modo-degradado)). La TUI ofrece `/sessions` o `Ctrl+X`, `L`; la interfaz de plugins documenta `context.ui.tabs.open(sessionID)` y `context.ui.tabs.list()`. No supongas que crear la sesión por HTTP abrió la tab. [TUI V2](https://opencode.ai/v2/docs/cli/tui/), [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/), [configuración CLI](https://opencode.ai/v2/docs/cli/config)
+- Si el usuario pidió ver las sesiones como tabs, comprueba que el modo efectivo de tabs de la TUI no sea `off` (`tabs.mode` explícito `on`, o `auto` sin `HERDR_ENV=1` en el proceso TUI, o legado `tabs.enabled: true` sin `mode`; regla completa en [recipe-tui-tabs.md](recipe-tui-tabs.md) §3) y que el cliente permita abrir la sesión existente y verificar la tab por `sessionID`; si no pidió tabs, una tab no verificable no bloquea (se marca "no verificada"; ver Modo degradado en [SKILL.md](../SKILL.md#modo-degradado)). Crear la sesión por HTTP no abre la tab (invariante y mecanismos de tabs: [api-and-sessions.md](api-and-sessions.md#sesión-worker-raíz-crear-y-abrir-tab-son-acciones-distintas)). [TUI V2](https://opencode.ai/v2/docs/cli/tui/), [CLI plugin API](https://opencode.ai/v2/docs/build/plugins/cli/), [configuración CLI](https://opencode.ai/v2/docs/cli/config)
 - Inspecciona el catálogo de agentes, modos y permisos efectivos. Confirma que el worker pueda usar `subagent`, que los dos agentes hijos elegidos existan y puedan ejecutarse como hijos. [Agents V2](https://opencode.ai/v2/docs/agents), [Tools V2](https://opencode.ai/v2/docs/tools/)
 
-    ¿Instancia, ubicación, permisos y herramientas confirmados (y, si el usuario pidió tabs, tab verificable)?
+    ¿Instancia, ubicación, permisos y herramientas confirmados (y, si el usuario pidió tabs, capacidad de abrir y verificar la tab confirmada)?
     ├── NO  → Registra el preflight faltante; no afirmes éxito ni envíes trabajo.
     └── SÍ  → Árbol 2.
 
 Las rutas deben referirse al filesystem del servidor OpenCode. Para Windows, Linux y macOS pasa el valor canónico sin transformarlo según el sistema del cliente; si no corresponde a la misma instancia/ubicación, detente. [API V2](https://opencode.ai/v2/docs/api/)
+
+## Árbol 1b — ¿Qué nomenclatura de título y cómo paso la lista de workers?
+
+Antes de crear sesiones, decide cómo se van a llamar. El patrón canónico es `[NN] Nombre` (detalle en [naming-convention.md](naming-convention.md)):
+
+- **`[00]`** es siempre la ranura de la raíz del orquestador: `init-run` la crea solo, y `--title` cambia el nombre, no el número.
+- Los workers arrancan en **`[01]`** y siguen correlativos. `worker_list` aplica el correlativo y **reasigna un `[00]` explícito** al siguiente ordinal libre.
+- El nombre propio describe el alcance (`[01] Vermithrax` para análisis ofensivo); el ID del run ya vive en el ledger, así que el título no lo repite.
+
+¿Cómo paso la lista de workers?
+
+    ├── ¿Títulos con espacios? (casi siempre sí, son legibles)
+    │     ├── SÍ → `--worker "T1" --worker "T2"` (una flag por sesión; inequívoco)
+    │     │        o `--workers "T1, T2"` (lista delimitada por comas)
+    │     └── NUNCA → `--workers "T1 T2"`: el espacio es parte del título,
+    │                  no un delimitador; partiría cada título en dos sesiones.
+    └── ¿Sin número y quieres que se auto-numere?
+          └── SÍ → `worker_list` asigna `01, 02, 03...` en orden de entrada.
+
+El dedup compara por **nombre ignorando el ordinal**, así que `--worker "Vermithrax"` reusa `[01] Vermithrax` en vez de crear un duplicado. Si `init-run` responde `INCOMPLETO` y sale 1, algún worker no se creó: reejecuta con los mismos títulos y el dedup completa lo que faltó. [Nomenclatura](naming-convention.md)
 
 ## Árbol 2 — ¿Se puede iniciar al worker raíz con identidad verificable?
 
