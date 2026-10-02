@@ -40,7 +40,7 @@ The minimum (`run.min_subagents_per_worker: 2`), the `verified` gate, and the `s
 
 Child scopes follow the rule of [scopes and write order](agents-and-safety.md#write-budget-and-scopes). The children report to the worker; the orchestrator reads the worker's result through that session's confirmed capability; only the orchestrator changes the canonical ledger.
 
-On concurrency: there is no default value; `run.max_sessions_in_flight` follows the single rule of [ledger-template.md](ledger-template.md#optional-limit-max_sessions_in_flight).
+On concurrency: there is no default value; `run.max_sessions_in_flight` follows the single rule of [ledger-template.md](ledger-template.md#optional-max_sessions_in_flight-limit).
 
 ## Single rule for child location
 
