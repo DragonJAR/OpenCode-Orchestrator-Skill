@@ -48,6 +48,11 @@ WS_PHYS=$(pwd -P 2>/dev/null) || {
 export WS_PHYS
 
 SCRIPT_DIR=$(dirname "$0") || exit 2
+# Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
+# parse_scalar, split_items and list_items live in _validators.awk and are
+# prepended to BOTH awk programs below. Never re-define them here.
+_VAL_LIB=""
+[ -f "$SCRIPT_DIR/_validators.awk" ] && _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
 DAG_VALIDATOR=$SCRIPT_DIR/validate_dag.sh
 [ -f "$DAG_VALIDATOR" ] && [ -r "$DAG_VALIDATOR" ] || {
   printf 'ERROR: DAG validator missing: %s\n' "$DAG_VALIDATOR" >&2
@@ -61,27 +66,12 @@ DAG_RC=$?
 # The DAG validator rejects syntax outside the canonical YAML subset. This
 # pass extracts close-gate fields and emits delimiter-safe records.
 SEP=$(printf '\034')
-RECORDS=$(awk -v sep="$SEP" '
-function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+RECORDS=$(awk -v sep="$SEP" "$_VAL_LIB
+"'
 # Report the first extraction problem with its line number (stderr; stdout carries records).
 function badline(msg) {
   bad = 1
   if (!reported) { printf "[FAIL] line %d: %s\n", FNR, msg | "cat 1>&2"; reported = 1 }
-}
-function strip_comment(s,   i, c, q, esc, out) {
-  q = 0; esc = 0; out = ""
-  for (i = 1; i <= length(s); i++) {
-    c = substr(s, i, 1)
-    if (q) {
-      out = out c
-      if (esc) esc = 0
-      else if (c == "\\") esc = 1
-      else if (c == "\"") q = 0
-    } else if (c == "\"") { q = 1; out = out c }
-    else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) break
-    else out = out c
-  }
-  return out
 }
 function is_drive(p) {
   return length(p) >= 3 && substr(p, 1, 1) ~ /[A-Za-z]/ && substr(p, 2, 1) == ":" &&
@@ -153,51 +143,6 @@ function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
   if (winmode) gsub(/\\/, "/", q)
   return q
 }
-function scalar(raw,   s, n, i, c, nx, out) {
-  s = trim(raw); SCALAR = ""
-  n = length(s)
-  if (n < 2 || substr(s, 1, 1) != "\"" || substr(s, n, 1) != "\"") return 0
-  out = ""
-  for (i = 2; i < n; i++) {
-    c = substr(s, i, 1)
-    if (c < " " || c == "\177") return 0   # control chars; same rule as validate_dag.sh parse_scalar
-    if (c == "\\") {
-      if (i + 1 >= n) return 0
-      nx = substr(s, ++i, 1)
-      if (nx != "\\" && nx != "\"") return 0
-      out = out nx
-    } else if (c == "\"") return 0
-    else out = out c
-  }
-  SCALAR = out
-  return 1
-}
-function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
-  s = trim(raw); LIST_N = 0
-  if (s == "[]") return 1
-  if (length(s) < 2 || substr(s, 1, 1) != "[" || substr(s, length(s), 1) != "]") return 0
-  inside = trim(substr(s, 2, length(s) - 2))
-  if (inside == "") return 0
-  q = 0; esc = 0; cur = ""; n = 0
-  for (i = 1; i <= length(inside); i++) {
-    c = substr(inside, i, 1)
-    if (q) {
-      cur = cur c
-      if (esc) esc = 0
-      else if (c == "\\") esc = 1
-      else if (c == "\"") q = 0
-    } else if (c == "\"") { q = 1; cur = cur c }
-    else if (c == ",") { RAW_ITEM[++n] = cur; cur = "" }
-    else cur = cur c
-  }
-  if (q || esc) return 0
-  RAW_ITEM[++n] = cur
-  for (i = 1; i <= n; i++) {
-    if (!scalar(RAW_ITEM[i]) || SCALAR == "") return 0
-    LIST_ITEM[++LIST_N] = SCALAR
-  }
-  return 1
-}
 {
   if (FNR == 1 && substr($0, 1, 3) == "\357\273\277") $0 = substr($0, 4)   # strip UTF-8 BOM
   cr_line = $0; sub(/\r$/, "", cr_line)
@@ -209,14 +154,14 @@ function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
     else if (in_loc && line ~ /^    (directory|directory_client):/) {
       loc_key = line; sub(/^    /, "", loc_key); sub(/:.*/, "", loc_key)
       loc_raw = line; sub(/^    [A-Za-z_]+:[ \t]*/, "", loc_raw)
-      if (scalar(loc_raw)) { if (loc_key == "directory") SRVDIR = SCALAR; else CLIDIR = SCALAR }
+      if (parse_scalar(loc_raw, "")) { if (loc_key == "directory") SRVDIR = PVAL; else CLIDIR = PVAL }
     }
   }
   if (line ~ /^  - task_id:/) {
     raw = line; sub(/^  - task_id:[ \t]*/, "", raw)
-    if (!scalar(raw)) { badline("invalid task_id (use a double-quoted string)"); next }
+    if (!parse_scalar(raw, "")) { badline("invalid task_id (use a double-quoted string)"); next }
     task_n++; current = task_n
-    task_id[current] = SCALAR
+    task_id[current] = PVAL
     task_state[current] = task_outcome[current] = task_runtime[current] = ""
     task_kind[current] = task_parent[current] = task_criterion[current] = task_output[current] = ""
     task_notas[current] = ""
@@ -229,21 +174,21 @@ function list_items(raw,   s, inside, i, c, q, esc, cur, n) {
     raw = line; sub(/^    [A-Za-z_][A-Za-z0-9_]*:[ \t]*/, "", raw)
     raw = trim(raw)   # "null  " and "null # c" (comment already stripped) must equal "null"
     if (key == "evidence_refs") {
-      if (!list_items(raw)) { badline("invalid flow-style list in evidence_refs"); next }
+      if (!list_items(raw, LIST_ITEM)) { badline("invalid flow-style list in evidence_refs"); next }
       task_evidence_n[current] = LIST_N
       for (i = 1; i <= LIST_N; i++) task_evidence[current, i] = LIST_ITEM[i]
     } else if (key == "parent_task_id") {
       if (raw == "null") task_parent_null[current] = 1
-      else if (!scalar(raw)) { badline("invalid scalar in parent_task_id"); next }
-      else { task_parent[current] = SCALAR; task_parent_null[current] = 0 }
+      else if (!parse_scalar(raw, "")) { badline("invalid scalar in parent_task_id"); next }
+      else { task_parent[current] = PVAL; task_parent_null[current] = 0 }
     } else if (key == "task_kind" || key == "estado" || key == "execution_outcome" ||
                key == "sessionID" || key == "runtime_status" || key == "criterion" ||
                key == "output_path" || key == "notas") {
       val_is_null = 0
       if (raw == "null" && (key == "sessionID" || key == "runtime_status" || key == "output_path")) {
         val = ""; val_is_null = 1
-      } else if (!scalar(raw)) { badline("invalid scalar in " key); next }
-      else val = SCALAR
+      } else if (!parse_scalar(raw, "")) { badline("invalid scalar in " key); next }
+      else val = PVAL
       if (key == "task_kind") task_kind[current] = val
       else if (key == "estado") task_state[current] = val
       else if (key == "execution_outcome") task_outcome[current] = val
@@ -406,66 +351,8 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
         printf '[FAIL] %s nonexistent or unreadable evidence_refs: %s\n' "$task_id" "$evidence_path"
       fi
       FAILS=$((FAILS + 1)); PATH_FAILURES=$((PATH_FAILURES + 1)); evidence_bad=1
-    elif ! CRITERION="$evidence_criterion" EXPECTED_CHILDREN="$expected_children" awk '
-      function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-      function strip_comment(s,   i, c, q, esc, out) {
-        q = 0; esc = 0; out = ""
-        for (i = 1; i <= length(s); i++) {
-          c = substr(s, i, 1)
-          if (q) {
-            out = out c
-            if (esc) esc = 0
-            else if (c == "\\") esc = 1
-            else if (c == "\"") q = 0
-          } else if (c == "\"") { q = 1; out = out c }
-          else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) break
-          else out = out c
-        }
-        return out
-      }
-      function scalar(raw,   s, n, i, c, nx, out) {
-        s = trim(raw); VALUE = ""; n = length(s)
-        if (n < 2 || substr(s, 1, 1) != "\"" || substr(s, n, 1) != "\"") return 0
-        out = ""
-        for (i = 2; i < n; i++) {
-          c = substr(s, i, 1)
-          if (c < " " || c == "\177") return 0   # control chars; same rule as validate_dag.sh parse_scalar
-          if (c == "\\") {
-            if (i + 1 >= n) return 0
-            nx = substr(s, ++i, 1)
-            if (nx != "\\" && nx != "\"") return 0
-            out = out nx
-          } else if (c == "\"") return 0
-          else out = out c
-        }
-        VALUE = out; return 1
-      }
-      function list_items(raw,   s, inside, i, c, q, esc, cur, n, j) {
-        s = trim(raw); LIST_N = 0
-        if (s == "[]") return 1
-        if (length(s) < 2 || substr(s, 1, 1) != "[" || substr(s, length(s), 1) != "]") return 0
-        inside = trim(substr(s, 2, length(s) - 2))
-        if (inside == "") return 0
-        q = 0; esc = 0; cur = ""; n = 0
-        for (i = 1; i <= length(inside); i++) {
-          c = substr(inside, i, 1)
-          if (q) {
-            cur = cur c
-            if (esc) esc = 0
-            else if (c == "\\") esc = 1
-            else if (c == "\"") q = 0
-          } else if (c == "\"") { q = 1; cur = cur c }
-          else if (c == ",") { RAW_ITEM[++n] = cur; cur = "" }
-          else cur = cur c
-        }
-        if (q || esc) return 0
-        RAW_ITEM[++n] = cur
-        for (j = 1; j <= n; j++) {
-          if (!scalar(RAW_ITEM[j]) || VALUE == "") return 0
-          LIST_ITEM[++LIST_N] = VALUE
-        }
-        return 1
-      }
+    elif ! CRITERION="$evidence_criterion" EXPECTED_CHILDREN="$expected_children" awk "$_VAL_LIB
+"'
       {
         if (FNR == 1 && substr($0, 1, 3) == "\357\273\277") $0 = substr($0, 4)   # strip UTF-8 BOM
         line = $0; sub(/\r$/, "", line); line = strip_comment(line)
@@ -478,15 +365,15 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
         if (key != "criterion" && key != "result" && key != "observed" && key != "subagent_results_integrated") { bad = 1; next }
         if (seen[key]++) { bad = 1; next }
         if (key == "subagent_results_integrated") {
-          if (!list_items(raw)) { bad = 1; next }
+          if (!list_items(raw, LIST_ITEM)) { bad = 1; next }
           integration_n = LIST_N
           for (i = 1; i <= LIST_N; i++) {
             if (integration_seen[LIST_ITEM[i]]++) bad = 1
             integration[LIST_ITEM[i]] = 1
           }
         } else {
-          if (!scalar(raw)) { bad = 1; next }
-          value[key] = VALUE
+          if (!parse_scalar(raw, "")) { bad = 1; next }
+          value[key] = PVAL
         }
       }
       END {

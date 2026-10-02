@@ -181,12 +181,40 @@ sub_wait_idle() {
   [ -n "$SID" ] || { printf '%s\n' '--session required' >&2; exit 2; }
   require_state
   AUTH=$(auth_flag)
-  START=$(date +%s)
+  # Pool-safe: las sesiones se REUSAN entre tareas, asi que time.idle heredado
+  # del run anterior hacia que esta espera regresara de inmediato con valores
+  # viejos. send-prompt cachea el timestamp de despacho por sesion; si existe,
+  # solo un idle POSTERIOR a esa marca cuenta como terminado.
+  SINCE=$(cache_get "dispatch_$SID" 2>/dev/null)
+  # Deteccion de stuck: un worker colgado (p. ej. completion vacio del linaje
+  # Glacielle) no va a idle y no avanza time.updated. Convertir ese hang en un
+  # estado detectable permite al orquestador reasignar (antes era un silencio
+  # infinito indistinguible de trabajo lento).
+  STUCK_SECS=900
+  START=$(date +%s); LAST_UPD=""; STUCK_AT=0
   while : ; do
-    now=$(date +%s); [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
+    now=$(date +%s)
+    [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
     R=$(curl -fsS -m 10 $AUTH "$(cache_get endpoint)/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
     IDLE=$(printf '%s' "$R" | awk 'match($0,/"idle":[0-9]+/){print substr($0,RSTART+7,RLENGTH-7); exit}')
-    [ -n "$IDLE" ] && break
+    UPD=$(printf '%s' "$R" | awk 'match($0,/"updated":[0-9]+/){print substr($0,RSTART+11,RLENGTH-12); exit}')
+    if [ -n "$SINCE" ]; then
+      # pool-safe: el idle debe ser posterior al despacho de ESTA tarea
+      [ -n "$IDLE" ] && [ "$IDLE" -gt "$SINCE" ] && break
+    else
+      [ -n "$IDLE" ] && break
+    fi
+    if [ -n "$UPD" ]; then
+      if [ "$UPD" = "$LAST_UPD" ]; then
+        if [ $((now - STUCK_AT)) -ge "$STUCK_SECS" ]; then
+          printf 'wait-idle=stuck session=%s updated=%s (sin progreso %ss; reasigna la tarea)\n' \
+            "$SID" "$UPD" "$STUCK_SECS"
+          exit 4
+        fi
+      else
+        LAST_UPD="$UPD"; STUCK_AT=$now
+      fi
+    fi
     sleep "$INTERVAL"
   done
   OUTCOME=$(printf '%s' "$R" | awk -F'"outcome":"' 'NF>1{split($2,a,"\"");print a[1]; exit}')
@@ -220,6 +248,10 @@ sub_send_prompt() {
     -d '{"text":"'"$TEXT"'"}' "$(cache_get endpoint)/api/session/$SID/prompt") \
     || die 'POST /api/session/{id}/prompt failed'
   MID=$(printf '%s' "$R" | awk 'match($0,/"infoID":"[^"]+/){print substr($0,RSTART+10,RLENGTH-10); exit}')
+  # Cachea el timestamp de despacho: wait-idle de esta sesion solo acepta un
+  # idle POSTERIOR (pool-safe; sin esto el idle heredado del run anterior
+  # hacia regresar la espera de inmediato con valores viejos).
+  cache_put "dispatch_$SID" "$(date +%s)000"
   printf 'prompt=ok session=%s infoID=%s\n' "$SID" "${MID:-none}"
 }
 

@@ -16,6 +16,12 @@ set -u
 # Byte-exact length/substr/comparisons, independent of the caller's locale.
 LC_ALL=C
 export LC_ALL
+# Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
+# parse_scalar and split_items live in _validators.awk and are prepended to
+# the awk program below. Never re-define them here.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+_VAL_LIB=""
+[ -f "$SCRIPT_DIR/_validators.awk" ] && _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
 command -v awk >/dev/null 2>&1 || { printf 'ERROR: awk not available\n' >&2; exit 2; }
 
 if [ "$#" -ne 1 ]; then
@@ -51,11 +57,8 @@ while :; do
   esac
 done
 
-awk -v pwd="$WS_ESC" '
-function trim(s) {
-  gsub(/^[ \t]+|[ \t]+$/, "", s)
-  return s
-}
+awk -v pwd="$WS_ESC" "$_VAL_LIB
+"'
 function fail(msg) {
   printf "[FAIL] %s\n", msg
   failures++
@@ -64,74 +67,18 @@ function ok(msg) {
   printf "[OK] %s\n", msg
   passed++
 }
-function strip_comment(s,   i, c, q, esc, out) {
-  q = 0; esc = 0; out = ""
-  for (i = 1; i <= length(s); i++) {
-    c = substr(s, i, 1)
-    if (q) {
-      out = out c
-      if (esc) esc = 0
-      else if (c == "\\") esc = 1
-      else if (c == "\"") q = 0
-    } else if (c == "\"") {
-      q = 1; out = out c
-    } else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) break
-    else out = out c
-  }
-  return out
-}
-function parse_scalar(raw, allow_null,   s, n, i, c, nx, out) {
-  s = trim(raw); PVAL = ""; PNULL = 0
-  if (allow_null && s == "null") { PNULL = 1; return 1 }
-  n = length(s)
-  if (n < 2 || substr(s, 1, 1) != "\"" || substr(s, n, 1) != "\"") return 0
-  out = ""
-  for (i = 2; i < n; i++) {
-    c = substr(s, i, 1)
-    if (c < " " || c == "\177") return 0   # control chars; avoids [[:cntrl:]] (unsupported by mawk 1.3.3)
-    if (c == "\\") {
-      if (i + 1 >= n) return 0
-      nx = substr(s, ++i, 1)
-      if (nx != "\\" && nx != "\"") return 0
-      out = out nx
-    } else if (c == "\"") return 0
-    else out = out c
-  }
-  PVAL = out
-  return 1
-}
-function split_items(s, arr,   i, c, q, esc, cur, m) {
-  for (i in arr) delete arr[i]
-  q = 0; esc = 0; cur = ""; m = 0
-  for (i = 1; i <= length(s); i++) {
-    c = substr(s, i, 1)
-    if (q) {
-      cur = cur c
-      if (esc) esc = 0
-      else if (c == "\\") esc = 1
-      else if (c == "\"") q = 0
-    } else if (c == "\"") { q = 1; cur = cur c }
-    else if (c == ",") { arr[++m] = cur; cur = "" }
-    else cur = cur c
-  }
-  if (q || esc) return -1
-  arr[++m] = cur
-  return m
-}
-function parse_list(raw,   s, inside, n, i) {
+function parse_list(raw,   i) {
+  # Delegates to the shared list_items (single source of truth, S1c-09).
+  # Same contract this function always had: strips the brackets, validates
+  # every quoted item with parse_scalar, rejects empty items, fills
+  # LIST_VALUE/LIST_COUNT. Direct use of split_items was removed because the
+  # shared split_items takes the FULL bracketed list while this parser used
+  # to pass the bracket-stripped inside: a contract mismatch that silently
+  # dropped every scope_escritura and dependencias list.
   LIST_COUNT = 0
   for (i in LIST_VALUE) delete LIST_VALUE[i]
-  s = trim(raw)
-  if (s == "[]") return 1
-  if (length(s) < 2 || substr(s, 1, 1) != "[" || substr(s, length(s), 1) != "]") return 0
-  inside = trim(substr(s, 2, length(s) - 2))
-  if (inside == "") return 0
-  n = split_items(inside, RAW_ITEM)
-  if (n < 0) return 0
-  for (i = 1; i <= n; i++) {
-    if (!parse_scalar(RAW_ITEM[i], 0) || PVAL == "") return 0
-    LIST_VALUE[++LIST_COUNT] = PVAL
-  }
+  if (!list_items(raw, LIST_VALUE)) return 0
+  LIST_COUNT = LIST_N
   return 1
 }
 function split_key(s,   n) {

@@ -77,6 +77,7 @@ function split_items(raw, arr,   s, inside, i, c, q, esc, cur, n) {
 
 function list_items(raw, arr,   s, inside, i, c, q, esc, cur, n, j) {
   for (i in arr) delete arr[i]
+  LIST_N = 0
   s = trim(raw)
   if (s == "[]") return 1
   if (length(s) < 2 || substr(s, 1, 1) != "[" || substr(s, length(s), 1) != "]") return 0
