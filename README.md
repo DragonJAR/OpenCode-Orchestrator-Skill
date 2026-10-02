@@ -78,7 +78,7 @@ Expected output:
 TOTAL: 7 passed, 0 failed
 ```
 
-> **Windows Environments:** Run validators inside **Git Bash** or **WSL**. All `.sh` scripts must retain **LF** line endings. The repository enforces this automatically via `.gitattributes` (`*.sh text eol=lf`).
+> **Windows Environments:** Run validators and the orchestration scripts (`orchestrate-windows.sh`) inside **Git Bash** or **WSL** — never from `cmd.exe` directly (a `sh` must be on PATH). All `.sh` scripts must retain **LF** line endings; the repository enforces this automatically via `.gitattributes` (`*.sh text eol=lf`). For `attach-tabs` on Git Bash, a python3 with `fcntl` (MSYS2 python) is required; the script fails closed with instructions if absent.
 
 ---
 

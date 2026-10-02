@@ -78,7 +78,7 @@ Salida esperada:
 TOTAL: 7 passed, 0 failed
 ```
 
-> **Entornos Windows:** Ejecuta los scripts dentro de **Git Bash** o **WSL**. Los archivos `.sh` deben conservar finales de línea **LF**. El repositorio lo impone de forma automática mediante `.gitattributes` (`*.sh text eol=lf`).
+> **Entornos Windows:** Ejecuta los validadores y los scripts de orquestación (`orchestrate-windows.sh`) dentro de **Git Bash** o **WSL** — nunca directamente desde `cmd.exe` (requiere un `sh` en PATH). Los archivos `.sh` deben conservar finales de línea **LF**; el repositorio lo impone de forma automática mediante `.gitattributes` (`*.sh text eol=lf`). Para `attach-tabs` en Git Bash se requiere un python3 con `fcntl` (python de MSYS2); si falta, el script falla cerrado con instrucciones.
 
 ---
 
