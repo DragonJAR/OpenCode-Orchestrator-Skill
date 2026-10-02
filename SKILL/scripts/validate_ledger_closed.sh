@@ -66,7 +66,7 @@ function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
 # Report the first extraction problem with its line number (stderr; stdout carries records).
 function badline(msg) {
   bad = 1
-  if (!reported) { printf "[FAIL] línea %d: %s\n", FNR, msg > "/dev/stderr"; reported = 1 }
+  if (!reported) { printf "[FAIL] línea %d: %s\n", FNR, msg | "cat 1>&2"; reported = 1 }
 }
 function strip_comment(s,   i, c, q, esc, out) {
   q = 0; esc = 0; out = ""
@@ -130,10 +130,14 @@ function is_drive_norm(p) { return p ~ /^[A-Za-z]:\// }
 function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
   if (p == "") return p
   q = normp(p)
+  # Workspace form is resolved once for BOTH branches: winmode drives the
+  # backslash->slash conversion of a relative path, which must match
+  # validate_dag.sh canon_path (NS_WIN && !is_abs(p)). Reading winmode without
+  # assigning it here left the relative branch below as dead code.
+  srv = (SRVDIR != "") ? normp(SRVDIR) : ""
+  cli = (CLIDIR != "") ? normp(CLIDIR) : srv
+  winmode = (cli != "" && is_drive_norm(cli))
   if (is_abs(p)) {
-    srv = (SRVDIR != "") ? normp(SRVDIR) : ""
-    cli = (CLIDIR != "") ? normp(CLIDIR) : srv
-    winmode = (cli != "" && is_drive_norm(cli))
     if (winmode && !is_drive_norm(q)) q = posix_to_win(q)
     if (srv != "" && cli != "" && under(srv, q)) {
       rel = (q == srv) ? "" : substr(q, length(srv) + (substr(srv, length(srv), 1) == "/" ? 1 : 2))
@@ -156,6 +160,7 @@ function scalar(raw,   s, n, i, c, nx, out) {
   out = ""
   for (i = 2; i < n; i++) {
     c = substr(s, i, 1)
+    if (c < " " || c == "\177") return 0   # control chars; same rule as validate_dag.sh parse_scalar
     if (c == "\\") {
       if (i + 1 >= n) return 0
       nx = substr(s, ++i, 1)
@@ -284,6 +289,37 @@ if [ "$DAG_RC" -ne 0 ]; then
   printf '[FAIL] el gate DAG rechazó el ledger (exit %s)\n' "$DAG_RC"
 fi
 
+# Close-gate requirements for a task whose estado is "verified". These checks are
+# identical in strict mode and in --allow-degraded mode (only the strict branch
+# adds the "no está en estado local verified" precondition before calling).
+# Operates on the record fields already unpacked by the read loop below.
+check_verified() {
+  if [ "$outcome" != "succeeded" ]; then
+    printf '[FAIL] %s requiere execution_outcome succeeded (actual: %s)\n' "$task_id" "$outcome"
+    task_bad=1
+  fi
+  if [ "$runtime_is_null" = "1" ] || [ -z "$runtime" ]; then
+    printf '[FAIL] %s no registra runtime_status observado\n' "$task_id"
+    task_bad=1
+  fi
+  if [ -z "$criterion" ]; then
+    printf '[FAIL] %s no registra criterion\n' "$task_id"
+    task_bad=1
+  fi
+  if [ -z "$evidence_count" ] || [ "$evidence_count" -eq 0 ]; then
+    printf '[FAIL] %s verified sin evidence_refs\n' "$task_id"
+    task_bad=1
+  fi
+  if [ "$output_is_null" = "1" ] || [ -z "$path" ]; then
+    printf '[FAIL] %s no registra output_path\n' "$task_id"
+    task_bad=1
+  fi
+  if [ "$task_bad" -eq 0 ]; then
+    printf '[OK] %s tiene resultado terminal verificado y criterion\n' "$task_id"
+    PASSED=$((PASSED + 1))
+  fi
+}
+
 # field10 (integrated children) and field11 (notas) are delimiter-safe.
 # shellcheck disable=SC2034
 while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 field7 field8 field9 field10 field11; do
@@ -304,30 +340,7 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
     if [ "$ALLOW_DEGRADED" -eq 1 ]; then
       case "$estado" in
         verified)
-          if [ "$outcome" != "succeeded" ]; then
-            printf '[FAIL] %s requiere execution_outcome succeeded (actual: %s)\n' "$task_id" "$outcome"
-            task_bad=1
-          fi
-          if [ "$runtime_is_null" = "1" ] || [ -z "$runtime" ]; then
-            printf '[FAIL] %s no registra runtime_status observado\n' "$task_id"
-            task_bad=1
-          fi
-          if [ -z "$criterion" ]; then
-            printf '[FAIL] %s no registra criterion\n' "$task_id"
-            task_bad=1
-          fi
-          if [ -z "$evidence_count" ] || [ "$evidence_count" -eq 0 ]; then
-            printf '[FAIL] %s verified sin evidence_refs\n' "$task_id"
-            task_bad=1
-          fi
-          if [ "$output_is_null" = "1" ] || [ -z "$path" ]; then
-            printf '[FAIL] %s no registra output_path\n' "$task_id"
-            task_bad=1
-          fi
-          if [ "$task_bad" -eq 0 ]; then
-            printf '[OK] %s tiene resultado terminal verificado y criterion\n' "$task_id"
-            PASSED=$((PASSED + 1))
-          fi
+          check_verified
           ;;
         failed|blocked|partial|cancelled|interrupted)
           if [ -z "$notas" ]; then
@@ -357,30 +370,7 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
         printf '[FAIL] %s no está en estado local verified (estado: %s)\n' "$task_id" "$estado"
         task_bad=1
       fi
-      if [ "$outcome" != "succeeded" ]; then
-        printf '[FAIL] %s requiere execution_outcome succeeded (actual: %s)\n' "$task_id" "$outcome"
-        task_bad=1
-      fi
-      if [ "$runtime_is_null" = "1" ] || [ -z "$runtime" ]; then
-        printf '[FAIL] %s no registra runtime_status observado\n' "$task_id"
-        task_bad=1
-      fi
-      if [ -z "$criterion" ]; then
-        printf '[FAIL] %s no registra criterion\n' "$task_id"
-        task_bad=1
-      fi
-      if [ -z "$evidence_count" ] || [ "$evidence_count" -eq 0 ]; then
-        printf '[FAIL] %s verified sin evidence_refs\n' "$task_id"
-        task_bad=1
-      fi
-      if [ "$output_is_null" = "1" ] || [ -z "$path" ]; then
-        printf '[FAIL] %s no registra output_path\n' "$task_id"
-        task_bad=1
-      fi
-      if [ "$task_bad" -eq 0 ]; then
-        printf '[OK] %s tiene resultado terminal verificado y criterion\n' "$task_id"
-        PASSED=$((PASSED + 1))
-      fi
+      check_verified
     fi
     FAILS=$((FAILS + task_bad))
     if [ "$REQUIRE_EVIDENCE" -eq 1 ] && [ "$output_is_null" != "1" ] && [ -n "$path" ]; then
@@ -439,6 +429,7 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
         out = ""
         for (i = 2; i < n; i++) {
           c = substr(s, i, 1)
+          if (c < " " || c == "\177") return 0   # control chars; same rule as validate_dag.sh parse_scalar
           if (c == "\\") {
             if (i + 1 >= n) return 0
             nx = substr(s, ++i, 1)
@@ -479,7 +470,8 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
         if (FNR == 1 && substr($0, 1, 3) == "\357\273\277") $0 = substr($0, 4)   # strip UTF-8 BOM
         line = $0; sub(/\r$/, "", line); line = strip_comment(line)
         if (index(line, "\t")) { bad = 1; next }
-        if (trim(line) == "" || line ~ /^[ \t]*#/) next
+        # A tab is already rejected above, so only spaces can lead a comment line.
+        if (trim(line) == "" || line ~ /^ *#/) next
         if (line !~ /^[A-Za-z_][A-Za-z0-9_]*:[ \t]*/) { bad = 1; next }
         key = line; sub(/:.*/, "", key)
         raw = line; sub(/^[A-Za-z_][A-Za-z0-9_]*:[ \t]*/, "", raw)

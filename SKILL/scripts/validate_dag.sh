@@ -59,7 +59,6 @@ function trim(s) {
 function fail(msg) {
   printf "[FAIL] %s\n", msg
   failures++
-  bad = 1
 }
 function ok(msg) {
   printf "[OK] %s\n", msg
@@ -259,6 +258,13 @@ function canon_path(p,   n, rel) {
   if (n == ".") return BASE
   return normpath(BASE "/" n)
 }
+# Memoised canon_path for scope entries. SRV, BASE and NS_WIN are resolved in the
+# END block before the task loops run, so the canonical form of a given scope is
+# constant for the whole validation and can be computed once per (task, scope).
+function scanon(i, k) {
+  if (!((i, k) in canon_scope)) canon_scope[i, k] = canon_path(scope[i, k])
+  return canon_scope[i, k]
+}
 function touches(a, b,   la, lb) {
   if (a == b) return 1
   la = length(a); lb = length(b)
@@ -361,9 +367,10 @@ BEGIN {
       fail("clave desconocida en run: " KEY); next
     }
     if (seen_run[KEY]++) { fail("clave run duplicada: " KEY); next }
-    if (RAW !~ /^[1-9][0-9]*$/ || RAW + 0 > 2147483647)
-      fail("run." KEY " debe ser entero positivo")
-    else run_value[KEY] = RAW + 0
+    if (RAW !~ /^[1-9][0-9]*$/ || RAW + 0 > 2147483647) {
+      fail("run." KEY " debe ser entero positivo entre 1 y 2147483647")
+      if (KEY == "min_subagents_per_worker") min_bad = 1
+    } else run_value[KEY] = RAW + 0
     next
   }
 
@@ -406,7 +413,7 @@ END {
   req_run("root_session.sessionID", 1)
   req_run("root_session.parentID", 0)
   if (!("min_subagents_per_worker" in seen_run)) fail("falta run.min_subagents_per_worker")
-  else if (run_value["min_subagents_per_worker"] != 2)
+  else if (!min_bad && run_value["min_subagents_per_worker"] != 2)
     fail("run.min_subagents_per_worker debe ser exactamente 2")
   optional_run = "location.directory_client location.projectID location.subpath root_session.parentID client.tabs_scope client.active_tab_hint"
   optional_count = split(optional_run, optional_key, " ")
@@ -414,6 +421,7 @@ END {
     if (optional_key[r] in seen_run && !run_null[optional_key[r]] && run_value[optional_key[r]] == "")
       fail("run." optional_key[r] " no puede ser string vacío; usa null si no está disponible")
   loc_dir = run_value["location.directory"]
+  root_sid = (("root_session.sessionID" in seen_run) && !run_null["root_session.sessionID"]) ? run_value["root_session.sessionID"] : ""
   has_client = (("location.directory_client" in seen_run) && !run_null["location.directory_client"] &&
                 run_value["location.directory_client"] != "")
   client_dir = has_client ? run_value["location.directory_client"] : loc_dir
@@ -440,8 +448,8 @@ END {
     fail("run.server.endpoint_redacted contiene userinfo; elimina credenciales")
 
   required = "task_id task_kind parent_task_id location_directory sessionID parentID agent_id dependencias scope_escritura criterion output_path evidence_refs estado runtime_status execution_outcome source_sessionID before_messageID created_at last_state_at notas"
+  count = split(required, req, " ")
   for (i = 1; i <= task_n; i++) {
-    count = split(required, req, " ")
     for (r = 1; r <= count; r++)
       if (!((i, req[r]) in seen_task)) fail("tarea " i " sin campo requerido " req[r])
   }
@@ -523,7 +531,8 @@ END {
       fail(id " en estado " state " requiere runtime_status observado")
     if (task_null[i, "sessionID"] == 0 && task_value[i, "sessionID"] != "") {
       sid = task_value[i, "sessionID"]
-      if (sid in session_index) fail(id " repite sessionID de " session_index[sid])
+      if (sid == root_sid) fail(id " reutiliza el sessionID de run.root_session (sesión raíz del orquestador): " sid)
+      else if (sid in session_index) fail(id " repite sessionID de " session_index[sid])
       else session_index[sid] = id
     }
     if (active && state != "launching" && state != "outcome-unknown" &&
@@ -548,7 +557,7 @@ END {
       if (p == "") fail(id " contiene scope vacío")
       else {
         scopes[i]++; scope[i, scopes[i]] = p
-        if (canon_path(p) == "!OUTSIDE_WORKSPACE!")
+        if (scanon(i, k) == "!OUTSIDE_WORKSPACE!")
           fail(id " scope_escritura sale de la raíz del workspace: " p)
       }
     }
@@ -566,7 +575,7 @@ END {
       if (outcanon == "!OUTSIDE_WORKSPACE!") fail(id " output_path sale de la raíz del workspace")
       covered = 0
       for (k = 1; k <= scopes[i]; k++)
-        if (covers(canon_path(scope[i, k]), outcanon)) covered = 1
+        if (covers(scanon(i, k), outcanon)) covered = 1
       if (!covered) fail(id " output_path queda fuera de scope_escritura")
     }
   }
@@ -597,10 +606,10 @@ END {
           fail(id " parentID debe coincidir con el sessionID runtime del worker " parent_id)
         parent_child[i] = parent_i
         for (p = 1; p <= scopes[i]; p++) {
-          child_scope = canon_path(scope[i, p])
+          child_scope = scanon(i, p)
           covered = 0
           for (q = 1; q <= scopes[parent_i]; q++)
-            if (covers(canon_path(scope[parent_i, q]), child_scope)) covered = 1
+            if (covers(scanon(parent_i, q), child_scope)) covered = 1
           if (!covered)
             fail(id " scope_escritura queda fuera del presupuesto del worker " parent_id ": " scope[i, p])
         }
@@ -675,7 +684,7 @@ END {
         adjacency[ti, j] || adjacency[j, ti] || adjacency[i, tj] || adjacency[tj, i])) continue
     found = 0
     for (p = 1; p <= scopes[i]; p++) for (q = 1; q <= scopes[j]; q++)
-      if (touches(canon_path(scope[i, p]), canon_path(scope[j, q]))) found = 1
+      if (touches(scanon(i, p), scanon(j, q))) found = 1
     if (found) {
       fail(task_value[i, "task_id"] " y " task_value[j, "task_id"] " sin dependencia comparten scope")
       scope_bad = 1
