@@ -27,7 +27,7 @@ This procedure uses published interfaces and a server-served location, not a cli
   ```
 
   One `--worker` per session because the title contains spaces and space is not a list delimiter. Detail and limits: [naming-convention.md](naming-convention.md).
-- The worker coordinates and executes only the `subagent` rows and write scopes that the orchestrator pre-authorized in the prompt. Launch each child with the native `subagent` tool inside its session and verify that each session has a distinct `sessionID`, a real `parentID` of the worker, and the location required by the [single rule](subagent-contract.md#single-rule-for-child-location). If you need to change a task or scope, stop that work and request an update through the confirmed channel before making the change; do not write to the ledger or create unauthorized tasks, rows, or scopes. Follow the [canonical coordination contract](playbook.md#step-6-coordinate-the-subagents-of-each-worker).
+- The worker coordinates and executes only the `subagent` rows and write scopes that the orchestrator pre-authorized in the prompt. Launch each child with the native `subagent` tool inside its session and verify that each session has a distinct `sessionID`, a real `parentID` of the worker, and the location required by the [single rule](subagent-contract.md#single-rule-for-child-location). If you need to change a task or scope, stop that work and request an update through the confirmed channel before making the change; do not write to the ledger or create unauthorized tasks, rows, or scopes. Follow the [canonical coordination contract](playbook.md#step-6-coordinate-each-workers-subagents).
 - Child scopes, overlaps, and concurrent writes follow the [scope rule](agents-and-safety.md#write-budget-and-scopes).
 - The worker waits and reconciles the results, inspects them, integrates findings, and delivers a report with verifiable evidence to the orchestrator. The orchestrator verifies the results and writes the ledger.
 - `verified` only with the gate from [ledger-template.md](ledger-template.md#verified-worker-gate). A `failed`, `blocked`, or `partial` worker can report the failure without faking the minimum.
@@ -38,7 +38,7 @@ HTTP session and `subagent` are different mechanisms (canonical invariant: [api-
 
 DAG dependencies describe order, never parent-child ownership. Use `parent_task_id` and the runtime `parentID` for the hierarchy. Siblings with no dependency work in parallel if their write scopes are disjoint; the rest of the scope rules live in [agents-and-safety.md](agents-and-safety.md#write-budget-and-scopes).
 
-About the optional concurrency limit (`run.max_sessions_in_flight`, only with an observed real limit), apply the single rule from [ledger-template.md](ledger-template.md#optional-limit-max_sessions_in_flight).
+About the optional concurrency limit (`run.max_sessions_in_flight`, only with an observed real limit), apply the single rule from [ledger-template.md](ledger-template.md#optional-max_sessions_in_flight-limit).
 
 ## Dispatch slip for the worker
 

@@ -51,7 +51,7 @@ Before sending the work prompt, the orchestrator records in the ledger at least 
 |---|---|
 | Dependency | If one task consumes another's output, add a dependency and wait for that output. |
 | Scopes and timeouts | A child receives an explicit subset of the worker's scope; overlaps, parent writer, and timeout: [single rule](agents-and-safety.md#write-budget-and-scopes). |
-| Capacity | Serialize according to observed capacity and real dependencies; `run.max_sessions_in_flight` only with a real limit and provenance in `notas` ([ledger-template.md](ledger-template.md#optional-limit-max_sessions_in_flight)). |
+| Capacity | Serialize according to observed capacity and real dependencies; `run.max_sessions_in_flight` only with a real limit and provenance in `notas` ([ledger-template.md](ledger-template.md#optional-max_sessions_in_flight-limit)). |
 
 Declare paths relative to the workspace root (resolved against `run.location.directory_client` or, if absent, `run.location.directory`; see [ledger-template.md](ledger-template.md#single-schema)); check that every output is contained in the assigned write scope. Every task of both kinds carries `task_kind`, `parent_task_id`, native `parentID`, and `location_directory` per the schema 3 contract in [SKILL.md](../SKILL.md#identity-and-ledger).
 
@@ -99,7 +99,7 @@ If a pre-authorized task or scope needs to change, the worker stops that work an
 
 ## Step 7: Monitor and reconcile
 
-- Wait for the session's documented signal and read the result with the [bounded result read](api-and-sessions.md#bounded-result-read) and the [reconciliation rules](api-and-sessions.md#wait-reconciliation-rules): confirm the children with `GET /api/session?parentID=`, review pending permissions on every cycle, and re-arm the deadline only while the worker stays active (capped; then `outcome-unknown`). Do not poll without limit or duplicate prompts.
+- Wait for the session's documented signal and read the result with the [bounded result read](api-and-sessions.md#bounded-result-reading) and the [reconciliation rules](api-and-sessions.md#wait-reconciliation-rules): confirm the children with `GET /api/session?parentID=`, review pending permissions on every cycle, and re-arm the deadline only while the worker stays active (capped; then `outcome-unknown`). Do not poll without limit or duplicate prompts.
 - Keep separate the literal `runtime_status`, the local `execution_outcome` (`unknown`, `succeeded`, `failed`, `interrupted`, `cancelled`), and the ledger's local `estado`.
 - A timeout, disconnect, or missing notice does not prove the session stopped. Reconnect to the same endpoint; reconfirm location and IDs; use only reads/reconciliation documented in the active `/openapi.json`.
 - Until reconciled, keep the child's scope and prevent the parent or an overlapping sibling from writing. Do not resend a request whose effect is uncertain.
@@ -122,7 +122,7 @@ A worker's `verified` gate (minimum of two distinct subagents, correct `parentID
 4. Every verified worker satisfies the [verified worker gate](ledger-template.md#verified-worker-gate) and its evidence follows the [canonical format](ledger-template.md#evidence-format).
 5. Workers reported state and results; only the orchestrator modified the ledger.
 6. Inherited scopes; overlapping siblings serialized; the parent did not write into active scopes; timeout reconciled before release.
-7. If `run.max_sessions_in_flight` appears, it satisfies the [optional limit rule](ledger-template.md#optional-limit-max_sessions_in_flight).
+7. If `run.max_sessions_in_flight` appears, it satisfies the [optional limit rule](ledger-template.md#optional-max_sessions_in_flight-limit).
 8. Artifacts checked against criteria; limitations and pending integration points are recorded in the close-out.
 
 ### Failure paths
