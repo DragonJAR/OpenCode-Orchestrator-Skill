@@ -68,6 +68,7 @@ parse_kv() {
       -d|--deadline) DEADLINE="${2:-}"; shift 2 ;; -i|--interval) INTERVAL="${2:-}"; shift 2 ;;
       -s|--session) SID="${2:-}"; shift 2 ;; -a|--artifact) ARTIFACT="${2:-}"; shift 2 ;;
       --workers) WORKERS="${2:-}"; shift 2 ;;
+      --count) COUNT="${2:-}"; shift 2 ;;
       --worker) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${2:-}"; shift 2 ;;
       --worker=*) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${1#--worker=}"; shift ;;
       --prompt-file) PROMPT_FILE="${2:-}"; shift 2 ;;
@@ -215,7 +216,19 @@ pool_list() {
         tt=substr($0,RSTART+9,RLENGTH-10)
         ord=tt; sub(/^\[/,"",ord); sub(/\].*/,"",ord)
         nm=tt; sub(/^\[[0-9]+\][ \t]/,"",nm)
-        st="running"; if (match($0,/"idle":[0-9]+/)) st="idle"
+        # Idle only when time.idle == time.updated (the last marker is the
+        # idle marker). If time.idle is FROM a PREVIOUS run but time.updated
+        # is newer (the session is running a new prompt now), classify as
+        # running so init-run refuses to overwrite the live session
+        # (fail-closed against concurrent agents).
+        st="running"
+        if (match($0,/"idle":([0-9]+)/)) {
+          midle = substr($0,RSTART+8,RLENGTH-8)+0
+          if (match($0,/"updated":([0-9]+)/)) {
+            mupd = substr($0,RSTART+10,RLENGTH-10)+0
+            if (midle >= mupd) st="idle"
+          }
+        }
         sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
         out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
         if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\n", ord+0, nm, st, slug(tt), sid, out
