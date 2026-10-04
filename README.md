@@ -199,10 +199,25 @@ OpenCode-Orchestrator-Skill/
     │   ├── recipe-tui-tabs.md      # Direct HTTP auth & local TUI tabs recipe
     │   ├── research-evidence.md    # Upstream source tracking, versions & audit trail
     │   ├── subagent-contract.md    # Native subagent tool contract & location rules
+    │   ├── naming-convention.md    # `[NN] Name` session title pattern
     │   └── trigger-tests.md        # Test suite for activation & false-positive defense
-    └── scripts/                    # Zero-dependency POSIX shell validators
+    └── scripts/                    # Zero-dependency POSIX shell validators + orchestrator
+        ├── orchestrate.sh           # Multi-OS swiss-army knife (12 subcommands)
+        ├── orchestrate-{darwin,linux,wsl,windows}.sh  # Explicit OS dispatch wrappers
+        ├── preflight.sh             # Endpoint + tabs gate discovery (caches state)
+        ├── watch_run.sh             # Bounded POSIX+awk watcher (idle + artifacts)
+        ├── dragon_name.sh           # Catalog of 100 dragon names + deterministic synthesis
+
         ├── validate_dag.sh         # In-flight DAG, syntax & scope validator
         └── validate_ledger_closed.sh # Final closing gate validator (--allow-degraded)
+        └── os/                      # OS adapters: lock + path normalization
+            ├── _common.sh        # Shared helpers (auth, cache, json, pool, tabs)
+            ├── darwin.sh         # macOS: python3 fcntl
+            ├── linux.sh          # Linux: flock(1)
+            ├── wsl.sh            # WSL: flock(1), drvfs fail-closed
+            ├── windows-gbash.sh  # Git Bash: python3 fcntl with MSYS2 probe
+            └── tui-detect.sh     # Active TUI / tabs gate detector (read-only)
+
 ```
 
 ---
