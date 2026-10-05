@@ -243,7 +243,7 @@ pool_list() {
         # Locate "title":" and step past it (length 9: "title":") ".
         i_t = index($0, "title")
         if (i_t == 0) next
-        rest = substr($0, i_t + 9)
+        rest = substr($0, i_t + 7)
         if (length(rest) < 5) next
         if (substr(rest, 1, 1) != "[") next
         if (substr(rest, 2, 1) !~ /[0-9]/ || substr(rest, 3, 1) !~ /[0-9]/) next
