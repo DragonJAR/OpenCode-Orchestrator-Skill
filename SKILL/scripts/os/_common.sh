@@ -241,7 +241,7 @@ pool_list() {
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$PROJ_DIR" 'BEGIN{d=d} { # always-defined; d is the project dir
         # Locate "title":" and step past it (length 9: "title":") ".
-        i_t = index($0, "\"title\":\"")
+        i_t = index($0, "title")
         if (i_t == 0) next
         rest = substr($0, i_t + 9)
         if (length(rest) < 5) next
@@ -265,8 +265,8 @@ pool_list() {
         # running so init-run refuses to overwrite the live session
         # (fail-closed against concurrent agents).
         st = "running"
-        i_idle = index($0, "\"idle\":")
-        i_upd = index($0, "\"updated\":")
+        i_idle = index($0, "idle")
+        i_upd = index($0, "updated")
         if (i_idle > 0 && i_upd > 0) {
           s = substr($0, i_idle + 7); sub(/[,}]/, "", s); midle = s + 0
           s = substr($0, i_upd + 10); sub(/[,}]/, "", s); mupd = s + 0
@@ -283,7 +283,7 @@ pool_list() {
           else sid = substr($0, i_sid, 19)  # fallback: 4 + 18 - 1?
         }
         out = "0"
-        i_out = index($0, "\"output\":")
+        i_out = index($0, "output")
         if (i_out > 0) {
           s = substr($0, i_out + 9); sub(/[,}]/, "", s); out = s + 0
         }
