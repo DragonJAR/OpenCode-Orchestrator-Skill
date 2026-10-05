@@ -250,10 +250,10 @@ for s in data:
     if not m:
         continue
     ord = int(m.group(1))
-    parent = int(m.group(3)) if m.group(3) is not None else ''
+    parent = m.group(2) if m.group(2) is not None else ''
     sid = s.get('id', '')
     out = s.get('output', 0)
-    nm = m.group(4) if m.lastindex >= 4 else m.group(2)  # capture properly
+    nm = m.group(3)  # capture properly
     idle = s.get('time', {}).get('idle', 0)
     updated = s.get('time', {}).get('updated', 0)
     st = 'idle' if idle and updated and idle >= updated else 'running'
