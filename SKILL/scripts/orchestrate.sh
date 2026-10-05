@@ -432,7 +432,8 @@ sub_pool() {
     return 0
   fi
   printf '%-8s %-30s %-9s\n' ORDINAL NAME STATE
-  printf '%s\n' "$POOL" | awk -F'\t' '{ printf "%-8s %-30s %-9s\n", "["$1"]", $2, $3 }'
+  # `sprintf("%02d", $1)` keeps the 2-digit ordinal (cosmetic: `[00]` instead of `[0]`).
+  printf '%s\n' "$POOL" | awk -F'\t' '{ o=sprintf("%02d", $1); printf "%-8s %-30s %-9s\n", "["o"]", $2, $3 }'
   printf 'next free ordinal: [%02d]\n' $(( $(pool_max_ordinal) + 1 ))
 }
 

@@ -29,7 +29,7 @@ The orchestrator creates root `worker_session` sessions and is the sole owner of
 
 ## Title naming convention
 
-**Canonical pattern: `[NN] Name`** — two-digit sequential ordinal, one space, readable name. **`[00]` is always the orchestrator root** and `init-run` creates it by itself, with or without `--title`; workers start at `[01]`.
+**Canonical pattern: `[NN] Name`** — two-digit sequential ordinal, one space, readable name. **`[00]` is always the orchestrator root** and `init-run` creates it by itself, with or without `--title`; workers start at `[01]`. The pattern is **enforced only at creation**: `title_normalize 0` and `worker_list` apply it when `ensure-root`/`create-worker`/`init-run` build a session, and the `/openapi.json` (v2.0.22 verified) **does not include a session-rename endpoint**. If an existing session has a non-canonical title (no `[NN]` prefix), the scripts cannot change it; either rename it manually via the TUI `/sessions` view, or accept the title it has (the pool still parses the ordinal from the title when present).
 
 ```
 [00] Orquestador   [01] Vermithrax   [02] Glacielle   [03] Tempestad
