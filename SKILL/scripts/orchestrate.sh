@@ -207,7 +207,7 @@ sub_wait_idle() {
     if [ -n "$UPD" ]; then
       if [ "$UPD" = "$LAST_UPD" ]; then
         if [ $((now - STUCK_AT)) -ge "$STUCK_SECS" ]; then
-          printf 'wait-idle=stuck session=%s updated=%s (sin progreso %ss; reasigna la tarea)\n' \
+          printf 'wait-idle=stuck session=%s updated=%s (no progress in %ss; reassign the task)\n' \
             "$SID" "$UPD" "$STUCK_SECS"
           exit 4
         fi
