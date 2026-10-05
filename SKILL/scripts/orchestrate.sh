@@ -181,15 +181,15 @@ sub_wait_idle() {
   [ -n "$SID" ] || { printf '%s\n' '--session required' >&2; exit 2; }
   require_state
   AUTH=$(auth_flag)
-  # Pool-safe: las sesiones se REUSAN entre tareas, asi que time.idle heredado
-  # del run anterior hacia que esta espera regresara de inmediato con valores
-  # viejos. send-prompt cachea el timestamp de despacho por sesion; si existe,
-  # solo un idle POSTERIOR a esa marca cuenta como terminado.
+  # Pool-safe: sessions are REUSED across tasks, so a time.idle inherited
+  # from a previous run would cause this wait to return immediately with stale
+  # values. send-prompt caches the dispatch timestamp per session; if it
+  # exists, only an idle timestamp NEWER than that mark counts as done.
   SINCE=$(cache_get "dispatch_$SID" 2>/dev/null)
-  # Deteccion de stuck: un worker colgado (p. ej. completion vacio del linaje
-  # Glacielle) no va a idle y no avanza time.updated. Convertir ese hang en un
-  # estado detectable permite al orquestador reasignar (antes era un silencio
-  # infinito indistinguible de trabajo lento).
+  # Stuck detection: a worker that hangs (e.g. empty completion in the Glacielle
+  # lineage) does NOT go idle and does NOT advance time.updated. Turning that
+  # hang into a detectable state lets the orchestrator reassign (previously it
+  # was an infinite silence indistinguishable from slow work).
   STUCK_SECS=900
   START=$(date +%s); LAST_UPD=""; STUCK_AT=0
   while : ; do
