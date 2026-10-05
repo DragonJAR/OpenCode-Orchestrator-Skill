@@ -239,7 +239,7 @@ pool_list() {
   # regex in some contexts); the same column format is emitted for workers and
   # sub-agents via the same code path (DRY).
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v d="$PROJ_DIR" 'BEGIN{d=d} { # always-defined; d is the project dir
+    awk -v d="$PROJ_DIR" 'BEGIN{dd=d} { # always-defined; d is the project dir
         # Locate "title":" and step past it (length 9: "title":") ".
         i_t = index($0, "title")
         if (i_t == 0) next
@@ -287,7 +287,7 @@ pool_list() {
         if (i_out > 0) {
           s = substr($0, i_out + 9); sub(/[,}]/, "", s); out = s + 0
         }
-        if (dd == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", nn, nm, st, "slug", sid, out, parent_str
+        if (d == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", nn, nm, st, "slug", sid, out, parent_str
       }' | sort -t$'\t' -k7,7 -k1,1n
 }
 
