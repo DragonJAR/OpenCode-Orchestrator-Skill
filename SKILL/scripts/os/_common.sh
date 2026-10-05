@@ -72,6 +72,11 @@ parse_kv() {
       --worker) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${2:-}"; shift 2 ;;
       --worker=*) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${1#--worker=}"; shift ;;
       --prompt-file) PROMPT_FILE="${2:-}"; shift 2 ;;
+      --router-prompt) ROUTER_PROMPT="${2:-}"; shift 2 ;;
+      --no-router) NO_ROUTER=1; shift ;;
+      --target) WORKER="${2:-}"; shift 2 ;;
+      --auto-count) AUTO_COUNT=1; shift ;;
+      --wait) WAIT=1; shift ;;
       --no-attach-tabs) NO_ATTACH=1; shift ;;
       --force-tabs) FORCE_TABS=1; shift ;;
       --force-new) FORCE_NEW=1; shift ;;
@@ -173,6 +178,26 @@ tabs_merge_py_file() {  # emits path to a temp .py with TABS_MERGE_PY
 
 die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 
+# parse_short_id REF -> "PARENT SUB"  (SUB empty for root/worker)
+# Accepts: "01", "1", "01s02", "[01]s[02]", "[01]s02", "01s2"
+# The encoding is the worker's `[NN]` prefix optionally followed by `s[MM]`
+# (sub-agent of that worker; R3c forbids a third level, so the grammar stops at `s`).
+parse_short_id() {
+  r=${1:-}
+  case "$r" in
+    *[!0-9s\[\]]*) printf '' ;;  # any disallowed char -> invalid
+    *)
+      r=${r//[\[\]]/}  # strip optional brackets
+      case "$r" in
+        *s*) N=${r%%s*}; M=${r#*s}
+              case "$N$M" in *[!0-9]*) printf '' ;;
+                *) [ -n "$N" ] && [ -n "$M" ] && printf '%s %s\n' "$N" "$M" || printf '' ;; esac ;;
+        *) case "$r" in *[!0-9]*) printf '' ;; *) [ -n "$r" ] && printf '%s\n' "$r" || printf '' ;; esac ;;
+      esac
+      ;;
+  esac
+}
+
 # tabs_json_path -> prints the ABSOLUTE path of the active TUI's tabs.json.
 # SINGLE SOURCE of the resolution (DRY): before, darwin/tui-detect discovered
 # the channel by glob and honored XDG_STATE_HOME, while linux/wsl/windows
@@ -196,10 +221,12 @@ tabs_json_path() {
   return 4
 }
 
-# pool_list -> "ordinal<TAB>name<TAB>idle|running<TAB>slug" lines of the project.
-# The pool is the set of project sessions titled "[NN] Name". The ordinal is
-# its stable identity: it survives runs and allows INCREMENTAL scaling
-# (reuse the deployed ones, create only the missing delta).
+# pool_list -> "ordinal<TAB>name<TAB>state<TAB>slug<TAB>sid<TAB>out<TAB>parent" lines.
+# parent is the worker's [NN] for sub-agents (empty for root/worker). The pool is
+# the set of project sessions titled "[NN] Name" (workers) or "[NN]s[MM] Name"
+# (sub-agents). The ordinal/sub-ordinal pair is the stable identity: it survives
+# runs and allows INCREMENTAL scaling (reuse the deployed ones, create only the
+# missing delta).
 pool_list() {
   AUTH=$(auth_flag 2>/dev/null || printf '')
   # SINGLE SOURCE of the pool: one /api/session fetch for whoever needs
@@ -207,12 +234,32 @@ pool_list() {
   # same fetch separately and the reuse path repeated the call.
   RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
   [ -n "$RESP" ] || return 3
-  # Columns: ordinal, name, state, slug, sessionID, output
+  # Columns: ordinal, name, state, slug, sessionID, output, parent_ord
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$PROJ_DIR" '
-      function slug(s, x) { x = s; sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
+      function slug(s, x) { x = s; sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]*/, "", x); sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
       match($0,/"directory":"[^"]+"/){dd=substr($0,RSTART+13,RLENGTH-14)}
-      match($0,/"title":"\[[0-9]+\] [^"]*"/){
+      # Sub-agent FIRST (more specific: [NN]s[MM]). If matched here, the worker
+      # branch below does not match because the trailing space in its pattern is
+      # not present after `[NN]s[MM]`.
+      match($0,/"title":"\[([0-9]+)\]s\[([0-9]+)\][^"]*"/){
+        tt=substr($0,RSTART+9,RLENGTH-10)
+        ord=tt; sub(/^\[/,"",ord); sub(/\]s\[.*/,"",ord)
+        parent=tt; sub(/\]s.*/,"",parent); sub(/.*\[/,"",parent)
+        nm=tt; sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]/,"",nm)
+        st="running"
+        if (match($0,/"idle":([0-9]+)/)) {
+          midle = substr($0,RSTART+8,RLENGTH-8)+0
+          if (match($0,/"updated":([0-9]+)/)) {
+            mupd = substr($0,RSTART+10,RLENGTH-10)+0
+            if (midle >= mupd) st="idle"
+          }
+        }
+        sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
+        out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
+        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ord+0, nm, st, slug(tt), sid, out, parent+0
+      }
+      match($0,/"title":"\[([0-9]+)\][^"]*"/){
         tt=substr($0,RSTART+9,RLENGTH-10)
         ord=tt; sub(/^\[/,"",ord); sub(/\].*/,"",ord)
         nm=tt; sub(/^\[[0-9]+\][ \t]/,"",nm)
@@ -231,8 +278,8 @@ pool_list() {
         }
         sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
         out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
-        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\n", ord+0, nm, st, slug(tt), sid, out
-      }' | sort -n
+        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\t\n", ord+0, nm, st, slug(tt), sid, out
+      }' | sort -t$'\t' -k7,7 -k1,1n
 }
 
 # pool_max_ordinal -> highest deployed ordinal (0 if the pool is empty).

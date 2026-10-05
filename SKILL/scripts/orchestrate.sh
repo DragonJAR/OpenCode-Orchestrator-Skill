@@ -349,6 +349,19 @@ sub_init_run() {
     RID=$(printf '%s\n' "$ROOT_OUT" | awk -F= '/^root_id/{print $2}')
     [ -n "$RID" ] || die "ensure_root returned no root_id; aborting the run without a root"
     printf 'root=[00] %s -> %s\n' "$ROOT_TITLE" "$RID"
+    # Install the router prompt on the freshly-created orchestrator so the LLM
+    # knows it must dispatch every task to a worker (never implement directly).
+    # DRY: one canonical router prompt under scripts/prompt-templates/.
+    if [ "${NO_ROUTER:-0}" -ne 1 ]; then
+      ROUTER_FILE="${ROUTER_PROMPT:-$SELF_DIR/prompt-templates/router-orchestrator.md}"
+      if [ -f "$ROUTER_FILE" ]; then
+        printf 'router: installing orchestrator instruction (%s, %s bytes)...\n' \
+          "$ROUTER_FILE" "$(wc -c < "$ROUTER_FILE" | tr -d ' ')"
+        sub_send_prompt --session "$RID" --prompt-file "$ROUTER_FILE" || true
+      else
+        printf 'router: skipped (no router prompt at %s; use --router-prompt PATH or copy SKILL/scripts/prompt-templates/router-orchestrator.md)\n' "$ROUTER_FILE"
+      fi
+    fi
   fi
   ATTACHED=0; TABS_FAILED=0; FAILED=0; REUSED=0; CREATED=0
   # Line-driven, not word-split: a title is "[NN] Name" and the space is part
@@ -545,6 +558,70 @@ except Exception:
   printf 'deleted=%s children_was=%s\n' "$SID" "$CHILDREN"
 }
 
+# dispatch: route a task to one or multiple workers based on complexity.
+# NEVER touches the orchestrator's own context: the prompt is sent to workers
+# and the orchestrator only sees the dispatch summary + (optionally) the wait-idle
+# outcome. The orchestrator's job is routing + aggregation, not execution.
+sub_dispatch() {
+  PROMPT_FILE=""; WORKER=""; COUNT=""; AUTO_COUNT=0; WAIT=0; DEADLINE=600; INTERVAL=10
+  parse_kv "$@"
+  [ -n "$PROMPT_FILE" ] || die "dispatch: --prompt-file required"
+  [ -f "$PROMPT_FILE" ] || die "dispatch: prompt file not found: $PROMPT_FILE"
+  require_state
+
+  # Idle workers in the pool (column 7 = parent, empty for workers; column 3 = state).
+  POOL=$(pool_list) || die "dispatch: could not query worker pool"
+  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $4 }')
+  N_IDLE=$(printf '%s\n' "$IDLE" | grep -c .)
+  [ "$N_IDLE" -gt 0 ] || die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
+
+  # Heuristic complexity -> N (only when --auto-count).
+  WORDS=$(wc -w < "$PROMPT_FILE" | tr -d ' ')
+  BULLETS=$(grep -cE '^[[:space:]]*[0-9]+[.)][[:space:]]|^[[:space:]]*[-*][[:space:]]' "$PROMPT_FILE" 2>/dev/null || printf '0')
+
+  # Decide the target list.
+  if [ -n "$WORKER" ]; then
+    TARGET=$(printf '%s\n' "$IDLE" | awk -v w="$WORKER" '$1+0 == w+0')
+    [ -n "$TARGET" ] || die "dispatch: worker $WORKER is not idle (only idle workers can receive new prompts)"
+  elif [ -n "$COUNT" ]; then
+    N="$COUNT"
+    [ "$N" -ge 1 ] || die "--count must be >= 1"
+    [ "$N" -gt "$N_IDLE" ] && N="$N_IDLE"
+    TARGET=$(printf '%s\n' "$IDLE" | head -n "$N")
+  elif [ "$AUTO_COUNT" -eq 1 ]; then
+    N=1
+    if   [ "$WORDS" -ge 500 ] 2>/dev/null; then N=3
+    elif [ "$WORDS" -ge 200 ] 2>/dev/null; then N=2
+    fi
+    [ "$BULLETS" -ge 6 ] 2>/dev/null && N=3
+    [ "$BULLETS" -ge 3 ] 2>/dev/null && [ "$N" -lt 2 ] && N=2
+    [ "$N" -gt "$N_IDLE" ] && N="$N_IDLE"
+    [ "$N" -lt 1 ] && N=1
+    TARGET=$(printf '%s\n' "$IDLE" | head -n "$N")
+  else
+    # Default: single worker (first idle).
+    TARGET=$(printf '%s\n' "$IDLE" | head -n 1)
+  fi
+
+  # Dispatch + (optionally) wait.
+  printf 'dispatch: prompt=%s (words=%s bullets=%s) -> %d worker(s)\n' \
+    "$PROMPT_FILE" "$WORDS" "$BULLETS" "$(printf '%s\n' "$TARGET" | grep -c .)"
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    set -- $line
+    ORD="$1"; SID="$2"
+    printf '  -> [%02d] %s sending prompt...\n' "$ORD" "$SID"
+    sub_send_prompt --session "$SID" --prompt-file "$PROMPT_FILE" 2>&1 | sed 's/^/    /'
+    if [ "$WAIT" -eq 1 ]; then
+      printf '    waiting (deadline=%ds interval=%ds)...\n' "$DEADLINE" "$INTERVAL"
+      sub_wait_idle --session "$SID" --deadline "$DEADLINE" -i "$INTERVAL" | sed 's/^/    /'
+    fi
+  done <<EOF
+$TARGET
+EOF
+}
+
 sub_help() {
   cat <<'USAGE'
 orchestrate.sh [--os <darwin|linux|wsl|windows-gbash>] <subcmd> [args]
@@ -585,6 +662,15 @@ Subcommands:
                                      DELETE /api/session/{id} (verified in the active
                                      /openapi.json; R7 -> checks children and requires confirmation).
                                      --yes: skips prompt. --force: skips the children check.
+  dispatch --prompt-file F [--target NN] [--count N|--auto-count] [--wait]
+                                     Routes the prompt to an idle worker session (or several,
+                                     if complexity or --count warrants). The orchestrator's own
+                                     context stays clean -- it only sees the dispatch summary
+                                     and the workers' wait-idle outcomes. --auto-count
+                                     picks N from a simple heuristic on the prompt file:
+                                     words + bullet structure. Workers can recursively split
+                                     via their native subagent tool. The orchestrator NEVER
+                                     implements the task itself.
 USAGE
 }
 
@@ -603,6 +689,7 @@ case "$SUBCMD" in
   tabs) sub_tabs "$@" ;;
   verify-daughters) sub_verify_daughters "$@" ;;
   delete-session) sub_delete_session "$@" ;;
+  dispatch) sub_dispatch "$@" ;;
   ""|-h|--help|help) sub_help; exit 0 ;;
   *) printf 'unknown subcommand: %s\n' "$SUBCMD" >&2; sub_help >&2; exit 2 ;;
 esac
