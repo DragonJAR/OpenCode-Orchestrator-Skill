@@ -34,6 +34,37 @@ orchestrate.sh init-run --title "Q3 Audit" --worker "Vermithrax"
 [03] Tempestad        worker 3
 ```
 
+## Sub-agents: hierarchical encoding `[NN]s[MM]`
+
+A worker's sub-agents inherit its ordinal prefix, so the hierarchy is visible in the title without opening anything:
+
+| Full title | Compact reference | Meaning |
+|---|---|---|
+| `[01] Vermithrax` | `01` | worker 01 |
+| `[01s01] foo` | `01s01` | sub-agent 1 of worker 01 |
+| `[01s02] bar` | `01s02` | sub-agent 2 of worker 01 |
+| `[02] Glacielle` | `02` | worker 02 |
+| `[02s01] baz` | `02s01` | sub-agent 1 of worker 02 |
+
+`[NN]` is the parent's worker ordinal (root is always `00`); `s` separates levels; `[MM]` is the sub-agent's ordinal **within that parent** (1-based, correlative per parent). `init-run` and `worker_list` only cover the worker side; **the worker itself must name its children** with this encoding when it calls `subagent` — that requirement is in the worker prompt template ([prompt-templates.md](prompt-templates.md#4-child-launch)). `pool` indents sub-agents under their parent in the display; the slug already strips both prefixes, so dedup by name continues to work.
+
+To resolve a compact reference to the real `sessionID`:
+
+```sh
+orchestrate.sh session-id 00         # → ses_XXX  (orchestrator root)
+orchestrate.sh session-id 01         # → ses_XXX  (worker 01)
+orchestrate.sh session-id 01s02      # → ses_XXX  (sub-agent 2 of worker 01)
+```
+
+Brackets are optional: `session-id [01]` and `session-id [01s02]` work too. The output is the raw `sessionID` (one line) so it can be piped:
+
+```sh
+SID=$(orchestrate.sh session-id 01s02)
+orchestrate.sh send-prompt --session "$SID" --prompt-file ./prompt.md
+```
+
+There is no third level (grandchildren): R3c forbids a sub-agent spawning sub-agents, so `[NN]s[MM]s[XX]` is never used and the grammar stops at `s`.
+
 ## Why this shape
 
 - **Zero-padded, correlative.** Lexical order matches numeric order: `[00] < [01] < [20]` sorts correctly in the TUI, in `orchestrate.sh sessions`, and with `sort`. A `[9]` without zero would interleave badly.
