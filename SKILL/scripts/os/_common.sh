@@ -262,20 +262,20 @@ pool_list() {
         sid = ""
         if (match($0, /"id":"ses_[^"]+"/)) sid = substr($0, RSTART+6, RLENGTH-7)
         out = "0"
-        if (match($0, /"output":[([0-9]+)/)) out = substr($0, RSTART+9, RLENGTH-10)
+        if (match($0, /"output":([0-9]+)/)) out = substr($0, RSTART+9, RLENGTH-10)
         if (dd == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ord, nm, st, slug(title), sid, out, parent_ord
       }
-      match($0, /"directory":"[^"]+"/) { dd = substr($0, RSTART+13, RLEVEL-14) }
+      match($0, /"directory":"[^"]+"/) { dd = substr($0, RSTART+13, RLENGTH-14) }
       # Sub-agent FIRST (more specific: [NN]s[MM]). The worker branch below
       # does NOT match because its trailing-space pattern is absent from sub-agent titles.
       if (match($0, /"title":"\[([0-9]+)\]s\[([0-9]+)\][^"]*"/)) {
-        tt = substr($0, RSTART+9, RLEVEL-10)
+        tt = substr($0, RSTART+9, RLENGTH-10)
         ord = tt; sub(/^\[/, "", ord); sub(/\]s\[.*/, "", ord); ord = ord + 0
         parent = tt; sub(/\]s.*/, "", parent); sub(/.*\[/, "", parent); parent = parent + 0
         emit_row(tt, parent)
       }
       else if (match($0, /"title":"\[([0-9]+)\][^"]*"/)) {
-        tt = substr($0, RSTART+9, RLEVEL-10)
+        tt = substr($0, RSTART+9, RLENGTH-10)
         ord = tt; sub(/^\[/, "", ord); sub(/\].*/, "", ord); ord = ord + 0
         emit_row(tt, "")
       }' | sort -t$'\t' -k7,7 -k1,1n
