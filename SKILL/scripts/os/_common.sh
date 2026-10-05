@@ -234,51 +234,50 @@ pool_list() {
   # same fetch separately and the reuse path repeated the call.
   RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
   [ -n "$RESP" ] || return 3
-  # Columns: ordinal, name, state, slug, sessionID, output, parent_ord
+  # Columns: ordinal, name, state, slug, sessionID, output, parent_ord.
+  # Two branches (worker + sub-agent) emit via the same emit_row helper so the
+  # output format is single-source (DRY).
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$PROJ_DIR" '
       function slug(s, x) { x = s; sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]*/, "", x); sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
-      match($0,/"directory":"[^"]+"/){dd=substr($0,RSTART+13,RLENGTH-14)}
-      # Sub-agent FIRST (more specific: [NN]s[MM]). If matched here, the worker
-      # branch below does not match because the trailing space in its pattern is
-      # not present after `[NN]s[MM]`.
-      match($0,/"title":"\[([0-9]+)\]s\[([0-9]+)\][^"]*"/){
-        tt=substr($0,RSTART+9,RLENGTH-10)
-        ord=tt; sub(/^\[/,"",ord); sub(/\]s\[.*/,"",ord)
-        parent=tt; sub(/\]s.*/,"",parent); sub(/.*\[/,"",parent)
-        nm=tt; sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]/,"",nm)
-        st="running"
-        if (match($0,/"idle":([0-9]+)/)) {
-          midle = substr($0,RSTART+8,RLENGTH-8)+0
-          if (match($0,/"updated":([0-9]+)/)) {
-            mupd = substr($0,RSTART+10,RLENGTH-10)+0
-            if (midle >= mupd) st="idle"
-          }
-        }
-        sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
-        out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
-        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ord+0, nm, st, slug(tt), sid, out, parent+0
-      }
-      match($0,/"title":"\[([0-9]+)\][^"]*"/){
-        tt=substr($0,RSTART+9,RLENGTH-10)
-        ord=tt; sub(/^\[/,"",ord); sub(/\].*/,"",ord)
-        nm=tt; sub(/^\[[0-9]+\][ \t]/,"",nm)
+      # Emit one session (DRY between worker/sub-agent branches). parent_ord is
+      # "" for root/worker; NN for sub-agents. Reads time to classify state.
+      function emit_row(title, parent_ord) {
+        nm = title
+        sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]*/, "", nm)
+        sub(/^\[[0-9]+\][ \t]*/, "", nm)
         # Idle only when time.idle == time.updated (the last marker is the
         # idle marker). If time.idle is FROM a PREVIOUS run but time.updated
         # is newer (the session is running a new prompt now), classify as
         # running so init-run refuses to overwrite the live session
         # (fail-closed against concurrent agents).
-        st="running"
-        if (match($0,/"idle":([0-9]+)/)) {
-          midle = substr($0,RSTART+8,RLENGTH-8)+0
-          if (match($0,/"updated":([0-9]+)/)) {
-            mupd = substr($0,RSTART+10,RLENGTH-10)+0
-            if (midle >= mupd) st="idle"
+        st = "running"
+        if (match($0, /"idle":([0-9]+)/)) {
+          midle = substr($0, RSTART+8, RLENGTH-8) + 0
+          if (match($0, /"updated":([0-9]+)/)) {
+            mupd = substr($0, RSTART+10, RLENGTH-10) + 0
+            if (midle >= mupd) st = "idle"
           }
         }
-        sid=""; if (match($0,/"id":"ses_[^"]+"/)) sid=substr($0,RSTART+6,RLENGTH-7)
-        out="0"; if (match($0,/"output":[0-9]+/)) out=substr($0,RSTART+9,RLENGTH-10)
-        if (dd==d) printf "%s\t%s\t%s\t%s\t%s\t%s\t\n", ord+0, nm, st, slug(tt), sid, out
+        sid = ""
+        if (match($0, /"id":"ses_[^"]+"/)) sid = substr($0, RSTART+6, RLENGTH-7)
+        out = "0"
+        if (match($0, /"output":[([0-9]+)/)) out = substr($0, RSTART+9, RLENGTH-10)
+        if (dd == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ord, nm, st, slug(title), sid, out, parent_ord
+      }
+      match($0, /"directory":"[^"]+"/) { dd = substr($0, RSTART+13, RLEVEL-14) }
+      # Sub-agent FIRST (more specific: [NN]s[MM]). The worker branch below
+      # does NOT match because its trailing-space pattern is absent from sub-agent titles.
+      if (match($0, /"title":"\[([0-9]+)\]s\[([0-9]+)\][^"]*"/)) {
+        tt = substr($0, RSTART+9, RLEVEL-10)
+        ord = tt; sub(/^\[/, "", ord); sub(/\]s\[.*/, "", ord); ord = ord + 0
+        parent = tt; sub(/\]s.*/, "", parent); sub(/.*\[/, "", parent); parent = parent + 0
+        emit_row(tt, parent)
+      }
+      else if (match($0, /"title":"\[([0-9]+)\][^"]*"/)) {
+        tt = substr($0, RSTART+9, RLEVEL-10)
+        ord = tt; sub(/^\[/, "", ord); sub(/\].*/, "", ord); ord = ord + 0
+        emit_row(tt, "")
       }' | sort -t$'\t' -k7,7 -k1,1n
 }
 
