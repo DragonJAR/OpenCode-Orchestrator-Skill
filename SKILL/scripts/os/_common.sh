@@ -228,68 +228,39 @@ tabs_json_path() {
 # runs and allows INCREMENTAL scaling (reuse the deployed ones, create only the
 # missing delta).
 pool_list() {
-  AUTH=$(auth_flag 2>/dev/null || printf '')
   # SINGLE SOURCE of the pool: one /api/session fetch for whoever needs
-  # workers (pool, dedup, init-run). Before, pool_list and find_dedup did the
-  # same fetch separately and the reuse path repeated the call.
+  # workers (pool, dedup, init-run). Parses with python3 (already a
+  # dependency for sub_dispatch's wait-idle prompt and verify-daughters);
+  # portable, robust to bracket mismatches and the closure-quirks of nawk.
+  AUTH=$(auth_flag 2>/dev/null || printf '')
   RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
   [ -n "$RESP" ] || return 3
-  # Columns: ordinal, name, state, slug, sessionID, output, parent_ord.
-  # Bracket-free parsing via index()+substr() (nawk on macOS chokes on \] inside
-  # regex in some contexts); the same column format is emitted for workers and
-  # sub-agents via the same code path (DRY).
-  printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v d="$PROJ_DIR" 'BEGIN{dd=d} { # always-defined; d is the project dir
-        # Locate "title":" and step past it (length 9: "title":") ".
-        i_t = index($0, "title")
-        if (i_t == 0) next
-        rest = substr($0, i_t + 8)
-        if (length(rest) < 5) next
-        if (substr(rest, 1, 1) != "[") next
-        if (substr(rest, 2, 1) !~ /[0-9]/ || substr(rest, 3, 1) !~ /[0-9]/) next
-        nn = substr(rest, 2, 2) + 0
-        sep = substr(rest, 4, 1)
-        parent_str = ""
-        # Worker prefix = [NN]:N=N (4 chars). Sub-agent prefix = [NN]s[MM] (8 chars).
-        prefix_len = (sep == "s") ? 8 : 4
-        if (length(rest) < prefix_len + 1) next
-        if (substr(rest, prefix_len, 1) != " ") next
-        nm = substr(rest, prefix_len + 1)
-        if (sep == "s") {
-          if (substr(rest, 5, 1) != "[" || substr(rest, 7, 1) != "]") next
-          parent_str = substr(rest, 6, 2) + 0
-        }
-        # Idle only when time.idle == time.updated (the last marker is the
-        # idle marker). If time.idle is FROM a PREVIOUS run but time.updated
-        # is newer (the session is running a new prompt now), classify as
-        # running so init-run refuses to overwrite the live session
-        # (fail-closed against concurrent agents).
-        st = "running"
-        i_idle = index($0, "idle")
-        i_upd = index($0, "updated")
-        if (i_idle > 0 && i_upd > 0) {
-          s = substr($0, i_idle + 7); sub(/[,}]/, "", s); midle = s + 0
-          s = substr($0, i_upd + 10); sub(/[,}]/, "", s); mupd = s + 0
-          if (midle == mupd) st = "idle"
-        }
-        # Session id: "id":"ses_XXXXXXXX" -> take everything between ses_ and the
-        # closing quote (the session id is fixed-format: ses_ + 18 base36 chars).
-        sid = ""
-        i_sid = index($0, "ses_")
-        if (i_sid > 0) {
-          tail = substr($0, i_sid + 4)  # after "ses_"
-          end = index(tail, "\"")
-          if (end > 0) sid = "ses_" substr($0, i_sid + 4, end - 1)
-          else sid = substr($0, i_sid, 19)  # fallback: 4 + 18 - 1?
-        }
-        out = "0"
-        i_out = index($0, "output")
-        if (i_out > 0) {
-          s = substr($0, i_out + 9); sub(/[,}]/, "", s); out = s + 0
-        }
-        if (d == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", nn, nm, st, "slug", sid, out, parent_str
-      }' | sort -t$'\t' -k7,7 -k1,1n
+  # Columns: ordinal<TAB>name<TAB>state<TAB>slug<TAB>sid<TAB>out<TAB>parent
+  # 7 columns; `d == d` filter for the project directory.
+  printf '%s' "$RESP" | python3 -c "
+import json, sys, re
+d = sys.argv[1]
+data = json.loads(sys.stdin.read()).get('data', [])
+for s in data:
+    loc = s.get('location', {}).get('directory', '')
+    if loc != d:
+        continue
+    title = s.get('title', '')
+    m = re.match(r'^\[(\d+)\](?:s\[(\d+)\])?\s+(.*)$', title)
+    if not m:
+        continue
+    ord = int(m.group(1))
+    parent = int(m.group(3)) if m.group(3) is not None else ''
+    sid = s.get('id', '')
+    out = s.get('output', 0)
+    nm = m.group(4) if m.lastindex >= 4 else m.group(2)  # capture properly
+    idle = s.get('time', {}).get('idle', 0)
+    updated = s.get('time', {}).get('updated', 0)
+    st = 'idle' if idle and updated and idle >= updated else 'running'
+    print('\t'.join([str(ord), m.group(2) or '', st, '', sid, str(out), str(parent)]))
+" "$PROJ_DIR" | sort -t$'\t' -k7,7 -k1,1n
 }
+
 
 # pool_max_ordinal -> highest deployed ordinal (0 if the pool is empty).
 pool_max_ordinal() {
