@@ -576,8 +576,11 @@ sub_dispatch() {
   [ "$N_IDLE" -gt 0 ] || die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
 
   # Heuristic complexity -> N (only when --auto-count).
-  WORDS=$(wc -w < "$PROMPT_FILE" | tr -d ' ')
+  # Defensive under set -u: if wc/grep misbehave we fall back to "0".
+  WORDS=$(wc -w < "$PROMPT_FILE" 2>/dev/null | tr -d ' ' || printf '0')
+  WORDS=${WORDS:-0}
   BULLETS=$(grep -cE '^[[:space:]]*[0-9]+[.)][[:space:]]|^[[:space:]]*[-*][[:space:]]' "$PROMPT_FILE" 2>/dev/null || printf '0')
+  BULLETS=${BULLETS:-0}
 
   # Decide the target list.
   if [ -n "$WORKER" ]; then
