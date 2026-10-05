@@ -235,49 +235,60 @@ pool_list() {
   RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
   [ -n "$RESP" ] || return 3
   # Columns: ordinal, name, state, slug, sessionID, output, parent_ord.
-  # Two branches (worker + sub-agent) emit via the same emit_row helper so the
-  # output format is single-source (DRY).
+  # Bracket-free parsing via index()+substr() (nawk on macOS chokes on \] inside
+  # regex in some contexts); the same column format is emitted for workers and
+  # sub-agents via the same code path (DRY).
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$PROJ_DIR" '
-      function slug(s, x) { x = s; sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]*/, "", x); sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
-      # Emit one session (DRY between worker/sub-agent branches). parent_ord is
-      # "" for root/worker; NN for sub-agents. Reads time to classify state.
-      function emit_row(title, parent_ord) {
-        nm = title
-        sub(/^\[[0-9]+\]s\[[0-9]+\][ \t]*/, "", nm)
-        sub(/^\[[0-9]+\][ \t]*/, "", nm)
+      {
+        # Locate "title":" and step past it (length 9: "title":") ".
+        i_t = index($0, "\"title\":\"")
+        if (i_t == 0) next
+        rest = substr($0, i_t + 9)
+        if (length(rest) < 5) next
+        if (substr(rest, 1, 1) != "[") next
+        if (substr(rest, 2, 1) !~ /[0-9]/ || substr(rest, 3, 1) !~ /[0-9]/) next
+        nn = substr(rest, 2, 2) + 0
+        sep = substr(rest, 4, 1)
+        parent_str = ""
+        # Worker prefix = [NN]:N=N (4 chars). Sub-agent prefix = [NN]s[MM] (8 chars).
+        prefix_len = (sep == "s") ? 8 : 4
+        if (length(rest) < prefix_len + 1) next
+        if (substr(rest, prefix_len, 1) != " ") next
+        nm = substr(rest, prefix_len + 1)
+        if (sep == "s") {
+          if (substr(rest, 5, 1) != "[" || substr(rest, 7, 1) != "]") next
+          parent_str = substr(rest, 6, 2) + 0
+        }
         # Idle only when time.idle == time.updated (the last marker is the
         # idle marker). If time.idle is FROM a PREVIOUS run but time.updated
         # is newer (the session is running a new prompt now), classify as
         # running so init-run refuses to overwrite the live session
         # (fail-closed against concurrent agents).
         st = "running"
-        if (match($0, /"idle":([0-9]+)/)) {
-          midle = substr($0, RSTART+8, RLENGTH-8) + 0
-          if (match($0, /"updated":([0-9]+)/)) {
-            mupd = substr($0, RSTART+10, RLENGTH-10) + 0
-            if (midle >= mupd) st = "idle"
-          }
+        i_idle = index($0, "\"idle\":")
+        i_upd = index($0, "\"updated\":")
+        if (i_idle > 0 && i_upd > 0) {
+          s = substr($0, i_idle + 7); sub(/[,}]/, "", s); midle = s + 0
+          s = substr($0, i_upd + 10); sub(/[,}]/, "", s); mupd = s + 0
+          if (midle == mupd) st = "idle"
         }
+        # Session id: "id":"ses_XXXXXXXX" -> take everything between ses_ and the
+        # closing quote (the session id is fixed-format: ses_ + 18 base36 chars).
         sid = ""
-        if (match($0, /"id":"ses_[^"]+"/)) sid = substr($0, RSTART+6, RLENGTH-7)
+        i_sid = index($0, "ses_")
+        if (i_sid > 0) {
+          tail = substr($0, i_sid + 4)  # after "ses_"
+          end = index(tail, "\"")
+          if (end > 0) sid = "ses_" substr($0, i_sid + 4, end - 1)
+          else sid = substr($0, i_sid, 19)  # fallback: 4 + 18 - 1?
+        }
         out = "0"
-        if (match($0, /"output":([0-9]+)/)) out = substr($0, RSTART+9, RLENGTH-10)
-        if (dd == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ord, nm, st, slug(title), sid, out, parent_ord
-      }
-      match($0, /"directory":"[^"]+"/) { dd = substr($0, RSTART+13, RLENGTH-14) }
-      # Sub-agent FIRST (more specific: [NN]s[MM]). The worker branch below
-      # does NOT match because its trailing-space pattern is absent from sub-agent titles.
-      if (match($0, /"title":"\[([0-9]+)\]s\[([0-9]+)\][^"]*"/)) {
-        tt = substr($0, RSTART+9, RLENGTH-10)
-        ord = tt; sub(/^\[/, "", ord); sub(/\]s\[.*/, "", ord); ord = ord + 0
-        parent = tt; sub(/\]s.*/, "", parent); sub(/.*\[/, "", parent); parent = parent + 0
-        emit_row(tt, parent)
-      }
-      else if (match($0, /"title":"\[([0-9]+)\][^"]*"/)) {
-        tt = substr($0, RSTART+9, RLENGTH-10)
-        ord = tt; sub(/^\[/, "", ord); sub(/\].*/, "", ord); ord = ord + 0
-        emit_row(tt, "")
+        i_out = index($0, "\"output\":")
+        if (i_out > 0) {
+          s = substr($0, i_out + 9); sub(/[,}]/, "", s); out = s + 0
+        }
+        if (dd == d) printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", nn, nm, st, "slug", sid, out, parent_str
       }' | sort -t$'\t' -k7,7 -k1,1n
 }
 
