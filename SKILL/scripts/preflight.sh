@@ -11,6 +11,7 @@
 #        OPENCODE_SESSION_ID (root session hint when orchestrating in-session).
 # Exit codes: 0 = ok, 1 = discovery failure, 2 = usage/environment error.
 set -u
+# shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DIR="${1:-$PWD}"
 CLI="${OPENCODE_CLI:-opencode}"

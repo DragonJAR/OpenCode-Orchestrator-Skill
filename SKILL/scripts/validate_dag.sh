@@ -19,6 +19,7 @@ export LC_ALL
 # Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
 # parse_scalar and split_items live in _validators.awk and are prepended to
 # the awk program below. Never re-define them here.
+# shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 _VAL_LIB=""
 [ -f "$SCRIPT_DIR/_validators.awk" ] && _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
