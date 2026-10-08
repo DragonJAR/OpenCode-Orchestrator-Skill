@@ -12,6 +12,7 @@
 # Exit codes: 0 = ok, 1 = discovery failure, 2 = usage/environment error.
 set -u
 # shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
+# shellcheck source-path=scripts
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DIR="${1:-$PWD}"
 CLI="${OPENCODE_CLI:-opencode}"
