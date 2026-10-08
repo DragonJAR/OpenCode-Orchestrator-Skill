@@ -187,7 +187,7 @@ parse_short_id() {
   case "$r" in
     *[!0-9s\[\]]*) printf '' ;;  # any disallowed char -> invalid
     *)
-      r=${r//[\[\]]/}  # strip optional brackets
+      r=$(printf '%s' "$r" | tr -d '[]')  # strip optional brackets (POSIX-portable)
       case "$r" in
         *s*) N=${r%%s*}; M=${r#*s}
               case "$N$M" in *[!0-9]*) printf '' ;;
@@ -258,7 +258,7 @@ for s in data:
     updated = s.get('time', {}).get('updated', 0)
     st = 'idle' if idle and updated and idle >= updated else 'running'
     print('\t'.join([str(ord), nm, st, '', sid, str(out), str(parent)]))
-" "$PROJ_DIR" | sort -t$'\t' -k7,7 -k1,1n
+" "$PROJ_DIR" | sort -t'	' -k7,7 -k1,1n
 }
 
 
