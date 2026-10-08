@@ -195,7 +195,7 @@ sub_wait_idle() {
   while : ; do
     now=$(date +%s)
     [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
-    R=$(curl -fsS -m 10 $AUTH "$(cache_get endpoint)/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
+    R=$(curl -fsS -m 10 "$AUTH" "$(cache_get endpoint)/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
     IDLE=$(printf '%s' "$R" | awk 'match($0,/"idle":[0-9]+/){print substr($0,RSTART+7,RLENGTH-7); exit}')
     UPD=$(printf '%s' "$R" | awk 'match($0,/"updated":[0-9]+/){print substr($0,RSTART+11,RLENGTH-12); exit}')
     if [ -n "$SINCE" ]; then
@@ -232,7 +232,7 @@ sub_send_prompt() {
   # model accepts the prompt, infers nothing (0 tokens) and ends in
   # outcome=failed with no visible error. Verified BEFORE sending, with the
   # reason stated.
-  SINFO=$(curl -fsS -m 15 $AUTH "$(cache_get endpoint)/api/session/$SID" 2>/dev/null)
+  SINFO=$(curl -fsS -m 15 "$AUTH" "$(cache_get endpoint)/api/session/$SID" 2>/dev/null)
   SESS_M=$(printf '%s' "$SINFO" | tr -d '\n' | sed 's/.*"model":{"id":"\([^"]*\)".*/\1/')
   if [ -z "$SESS_M" ] || [ "$SESS_M" = "$SINFO" ]; then
     printf 'ERROR: session %s has no resolved model (empty model.id).\n' "$SID" >&2
@@ -244,7 +244,7 @@ sub_send_prompt() {
   # An empty prompt used to be dispatched with prompt=ok: workers running with
   # no instructions and no error signal. Fail-closed.
   [ -n "$TEXT" ] || die "prompt file empty or unreadable: $PROMPT_FILE"
-  R=$(curl -fsS -m 60 $AUTH -H 'Content-Type: application/json' \
+  R=$(curl -fsS -m 60 "$AUTH" -H 'Content-Type: application/json' \
     -d '{"text":"'"$TEXT"'"}' "$(cache_get endpoint)/api/session/$SID/prompt") \
     || die 'POST /api/session/{id}/prompt failed'
   MID=$(printf '%s' "$R" | awk 'match($0,/"infoID":"[^"]+/){print substr($0,RSTART+10,RLENGTH-10); exit}')
@@ -553,7 +553,7 @@ except Exception:
     fi
   fi
   AUTH=$(auth_flag)
-  curl -fsS -m 30 $AUTH -X DELETE "$(cache_get endpoint)/api/session/$SID" \
+  curl -fsS -m 30 "$AUTH" -X DELETE "$(cache_get endpoint)/api/session/$SID" \
     || die "DELETE /api/session/$SID failed"
   printf 'deleted=%s children_was=%s\n' "$SID" "$CHILDREN"
 }
