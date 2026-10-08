@@ -35,7 +35,9 @@ OS="${OS_OVERRIDE:-$(detect_os)}"
 
 # OS first (defines os_project_dir / os_tabs_merge); _common after (uses them).
 [ -f "$SELF_DIR/os/$OS.sh" ] || { printf 'ERROR: unsupported OS: %s\n' "$OS" >&2; exit 2; }
+# shellcheck disable=SC1091  # runtime-determined source paths (OS-dependent, also fetched by IDLE_POOL later in the file).
 . "$SELF_DIR/os/$OS.sh"
+# shellcheck disable=SC1091
 . "$SELF_DIR/os/_common.sh"
 
 # auth_flag lives in os/_common.sh (the low layer that uses it), not here.
