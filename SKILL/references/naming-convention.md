@@ -63,6 +63,20 @@ SID=$(orchestrate.sh session-id 01s02)
 orchestrate.sh send-prompt --session "$SID" --prompt-file ./prompt.md
 ```
 
+**Matching behavior.** The implementation matches against the session
+`title` field, which is the worker name **including the `[NN]` prefix**
+(set by `sub_create_worker` from the `[NN] Name` you pick). The title
+must start with `[NN]` (worker/root) or `[NN]s[MM]` (sub-agent) for the
+match to succeed. Sessions whose title was created without the bracket
+prefix (legacy, parallel sessions, ad-hoc created sessions) will NOT
+match — use `pool` to enumerate them by ordinal/name, or pass the
+raw `sessionID` directly to `--session`.
+
+Implementation note: the regex anchor is `(?:\\s|$)`, NOT a word
+boundary — `]` followed by a space is two non-word characters, so
+`\b` would not match. The 1.0.0+ implementation handles this
+correctly.
+
 There is no third level (grandchildren): R3c forbids a sub-agent spawning sub-agents, so `[NN]s[MM]s[XX]` is never used and the grammar stops at `s`.
 
 ## Why this shape
