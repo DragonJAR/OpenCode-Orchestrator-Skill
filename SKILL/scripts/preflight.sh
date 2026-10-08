@@ -47,30 +47,30 @@ PW=""
 [ -n "$PW" ] && AUTH="-u opencode:$PW"
 
 # 3) /api/info (version/pid) + openapi guard (an HTML body is not a schema)
-INFO=$(curl -s -m 10 $AUTH "$URL/api/info" | tr -d ' \n')
+INFO=$(curl -s -m 10 "$AUTH" "$URL/api/info" | tr -d ' \n')
 [ -n "$VERSION" ] || VERSION=$(printf '%s' "$INFO" | awk 'match($0,/"version":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
 PID=$(printf '%s' "$INFO" | awk 'match($0,/"pid":[0-9]+/){print substr($0,RSTART+6,RLENGTH-6); exit}')
 printf 'version=%s\nserver_pid=%s\n' "$VERSION" "${PID:-unknown}"
-SCHEMA=$(curl -s -m 10 $AUTH "$URL/openapi.json" | tr -d ' \n' | awk 'match($0,/"openapi":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
+SCHEMA=$(curl -s -m 10 "$AUTH" "$URL/openapi.json" | tr -d ' \n' | awk 'match($0,/"openapi":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
 case "$SCHEMA" in
   3.*) printf 'openapi=%s\n' "$SCHEMA" ;;
   *) printf '%s\n' "ERROR: /openapi.json is not a valid schema (HTML or empty)"; exit 1 ;;
 esac
 
 # 4) canonical location + projectID for DIR (deepObject query)
-LOC=$(curl -s -m 10 -G $AUTH "$URL/api/location" --data-urlencode "location[directory]=$DIR" | tr -d ' \n')
+LOC=$(curl -s -m 10 -G "$AUTH" "$URL/api/location" --data-urlencode "location[directory]=$DIR" | tr -d ' \n')
 CANON=$(printf '%s' "$LOC" | awk 'match($0,/"canonical":"[^"]+/){print substr($0,RSTART+13,RLENGTH-13); exit}')
 PROJ=$(printf '%s' "$LOC" | awk 'match($0,/"project":\{"id":"[^"]+/){print substr($0,RSTART+17,RLENGTH-17); exit}')
 printf 'canonical_directory=%s\nprojectID=%s\n' "$CANON" "${PROJ:-none}"
 
 # 5) agent catalog split by mode (records are split at boundaries; first id per record)
-AG=$(curl -s -m 10 $AUTH "$URL/api/agent" | tr -d ' \n')
+AG=$(curl -s -m 10 "$AUTH" "$URL/api/agent" | tr -d ' \n')
 P=$(printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | awk '/"mode":"primary"/{if(match($0,/"id":"[^"]+"/))print substr($0,RSTART+6,RLENGTH-7)}' | paste -sd, -)
 S=$(printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | awk '/"mode":"subagent"/{if(match($0,/"id":"[^"]+"/))print substr($0,RSTART+6,RLENGTH-7)}' | paste -sd, -)
 printf 'agents_primary=%s\nagents_subagent=%s\n' "${P:-none}" "${S:-none}"
 
 # 6) default model pair (orchestrator profile; resolves exact ids, never hardcoded)
-MD=$(curl -s -m 10 $AUTH "$URL/api/model/default" | tr -d ' \n')
+MD=$(curl -s -m 10 "$AUTH" "$URL/api/model/default" | tr -d ' \n')
 MID=$(printf '%s' "$MD" | awk 'match($0,/"modelID":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
 PROV=$(printf '%s' "$MD" | awk 'match($0,/"providerID":"[^"]+/){print substr($0,RSTART+14,RLENGTH-14); exit}')
 printf 'model_default=%s@%s\n' "${MID:-none}" "${PROV:-none}"
