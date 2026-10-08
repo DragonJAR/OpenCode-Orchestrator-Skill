@@ -92,6 +92,7 @@ dragon_at() {
   n=$1
   case "$n" in ''|*[!0-9]*) die "non-numeric ordinal: $n" ;; esac
   [ "$n" -ge 1 ] || die "ordinal must be >= 1 (0 and negative do not exist)"
+  # shellcheck disable=SC2020  # tr is intentionally replacing sets of chars (space/tab -> newline) to split the catalog into one-name-per-line.
   name=$(printf '%s\n' "$CATALOG" | tr ' \t' '\n\n' | grep -v '^$' | sed -n "${n}p")
   if [ -n "$name" ]; then printf '%s\n' "$name"; return 0; fi
   synthesize "$n"
@@ -100,6 +101,7 @@ dragon_at() {
 case "${1:-}" in
   list)
     i=0
+    # shellcheck disable=SC2020  # tr is intentionally replacing sets of chars (space/tab -> newline) to split the catalog into one-name-per-line.
     printf '%s\n' "$CATALOG" | tr ' \t' '\n\n' | grep -v '^$' | while IFS= read -r name; do
       i=$((i + 1)); printf '%02d %s\n' "$i" "$name"
     done
@@ -107,6 +109,7 @@ case "${1:-}" in
   count) printf '%s\n' "$CATALOG_COUNT" ;;
   --json)
     printf '{"count":%s,"names":[' "$CATALOG_COUNT"
+    # shellcheck disable=SC2020  # tr is intentionally replacing sets of chars (space/tab -> newline) to split the catalog into one-name-per-line.
     printf '%s\n' "$CATALOG" | tr ' \t' '\n\n' | grep -v '^$' | awk 'BEGIN{first=1}
       { printf "%s\"%s\"", (first ? "" : ","), $0; first=0 } END { print "]}" }'
     ;;
