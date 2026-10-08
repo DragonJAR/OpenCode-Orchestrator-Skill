@@ -613,7 +613,7 @@ sub_dispatch() {
 
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    set -- $line
+    set -- "$line"
     ORD="$1"; SID="$2"
     printf '  -> [%02d] %s sending prompt...\n' "$ORD" "$SID"
     sub_send_prompt --session "$SID" --prompt-file "$PROMPT_FILE" 2>&1 | sed 's/^/    /'
