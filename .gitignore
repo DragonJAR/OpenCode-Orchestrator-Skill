@@ -9,6 +9,8 @@
 !/CHANGELOG.md
 !/SKILL/
 !/SKILL/**
+!/.github/
+!/.github/**
 
 # Operating system & temporary files
 **/.DS_Store
