@@ -8,29 +8,23 @@ on:
 
 jobs:
   shellcheck:
-    name: shellcheck + validators
+    name: shellcheck + sh -n
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install shellcheck
         run: sudo apt-get update -y && sudo apt-get install -y shellcheck
-      - name: Shellcheck (POSIX sh; severity=style by default; package-wide)
+      - name: Shellcheck (errors only, package-wide)
         run: |
           set -e
           files=$(find SKILL/scripts SKILL/scripts/os -type f -name '*.sh' | sort)
           echo "Running shellcheck on: $files"
           for f in $files; do
-            # Severity=style: only the non-blocker findings are reported
-            # by the local convention; --severity=error is the gate.
+            # Severity=error is the gating rule. Info/warning findings are
+            # documented in the package's RSI_LOG.md; they are not gating.
             shellcheck --severity=error "$f" || { echo "shellcheck error in $f"; exit 1; }
           done
           echo "shellcheck (errors only) PASS"
-      - name: Validators on the replica fixture
-        run: |
-          set -e
-          sh SKILL/scripts/validate_dag.sh runs/20261001-replica/ledger.yaml
-          sh SKILL/scripts/validate_ledger_closed.sh --require-evidence runs/20261001-replica/ledger.yaml
-          echo "validators PASS"
       - name: sh -n smoke
         run: |
           set -e
@@ -38,3 +32,9 @@ jobs:
             sh -n "$f" || { echo "syntax error in $f"; exit 1; }
           done
           echo "sh -n PASS"
+      # Note: validate_dag.sh and validate_ledger_closed.sh require a
+      # ledger fixture under runs/, which is gitignored (the directory
+      # contains prior run evidence; AGENTS.md treats runs/ as
+      # default-deny). The validators are run locally on the
+      # maintainer's machine; CI does not bundle the fixture to keep
+      # the workflow self-contained.
