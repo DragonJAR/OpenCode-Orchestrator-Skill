@@ -3,6 +3,7 @@
 # Detects the OS (or accepts --os); loads per-OS helpers; exposes subcommands.
 # Usage: orchestrate.sh [--os <darwin|linux|wsl|windows-gbash>] <subcmd> [args]
 # Contract: nothing hardcoded; endpoint/model/agents/project are resolved from the active state.
+# shellcheck source-path=scripts source=scripts
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 OS_OVERRIDE=""
