@@ -363,7 +363,7 @@ sub_init_run() {
       fi
     fi
   fi
-  ATTACHED=0; TABS_FAILED=0; FAILED=0; REUSED=0; CREATED=0
+  FAILED=0; REUSED=0; CREATED=0
   # Line-driven, not word-split: a title is "[NN] Name" and the space is part
   # of it. `for t in $WORKERS` shredded these into two sessions each.
   WORKER_LIST=$(worker_list "$WORKERS")
