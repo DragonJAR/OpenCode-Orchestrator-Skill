@@ -5,6 +5,7 @@
 # Usage: watch_run.sh -s SESSION_ID -a ARTIFACT[,ARTIFACT2...] [-d DEADLINE_SEC] [-i INTERVAL_SEC]
 # Exit codes: 0 = artifacts present and session idle; 3 = deadline; 2 = usage/env.
 # Prints one line per state transition: TS idle=<y/n> outcome=<x> artifacts=<n/m> [awaiting-approval]
+# shellcheck source-path=scripts
 set -u
 SESSION=""; ARTIFACTS=""; DEADLINE=1200; INTERVAL=15
 while getopts ":s:a:d:i:" opt; do
