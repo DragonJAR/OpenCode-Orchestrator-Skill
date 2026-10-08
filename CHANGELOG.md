@@ -4,6 +4,83 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Post-v1.0.0 fixes that ship in the next release. Each entry cites the
+commit that introduced it (no other source of truth).
+
+### Fixed
+
+- **pool_list empty pool** (`orchestrate.sh pool` returned "empty pool"
+  when `[NN]` workers existed) — root cause was a chain of nawk
+  bracket-escape bugs. `pool_list` now parses the API response with
+  python3 (a dependency that already existed for `sub_dispatch` and
+  `verify-daughters`), so it parses records by line, strips the
+  wrapping `{"data":[{...},{...}` and trailing `]}` artifacts, and
+  matches the regex `^\[(\d+)\](?:s\[(\d+)\])?\s+(.*)$` once per row.
+  Commits: `04c3df8`, `3dd76cf`, `37a7cb9`, `dbc8e45`, `11bd36f`,
+  `7a41579`, `d03a223`, `8866d25`, `5695315`, `6751a2f`, `75315e6`.
+- **pool_list NAME column empty** — the output line used `m.group(2)`
+  (the second capture group, which is the parent ordinal or `None`
+  for plain workers like `[00] Orquestador`) instead of the named
+  variable `nm` (the third capture group, the readable name). Commit:
+  `75315e6`.
+- **wait-idle stuck message** — was in Spanish (`sin progreso...
+  reasigna la tarea`); now English (`no progress in Ns; reassign the
+  task`). Commit: `d266d97`.
+
+### Documentation
+
+- **Skill is English-only inside the package.** The frontmatter
+  `description` is EN-only; the Spanish trigger list moved to
+  `SKILL/references/triggers-es.md` (which is linked from the
+  References table). Commit: `6fe561c`.
+- **CHANGELOG entries for the bugs above** — this section closes the
+  drift between git history and the documented release.
+
+### Added (post-v1.0.0 RSI, tracked but not part of v1.0.0)
+
+- **`orchestrate.sh session-id COMPACT_REF`** subcommand. Closes the
+  long-standing gap between `naming-convention.md` (which described
+  the subcommand) and the implementation (which was missing). Uses
+  the existing but-dead helper `parse_short_id` in
+  `os/_common.sh`. Resolves a compact ref like `00`, `01`, `01s02`,
+  `[01]`, or `[01s02]` to the raw `sessionID` (`ses_XXX`) for the
+  project. The implementation matches against the session
+  `title` field, which must contain the `[NN]` or `[NN]s[MM]`
+  prefix; legacy / parallel / ad-hoc titles that lack the prefix
+  are not matched (use `pool` to enumerate). The
+  `naming-convention.md` was extended with a "Matching behavior"
+  section that documents this. Commits: `d361957` (orchestrate.sh),
+  `5f6d230` (naming-convention.md).
+
+- **CI workflow** at `.github/workflows/ci.yml`. Runs
+  `shellcheck --severity=error` and `sh -n` on every push to
+  `main` and on every pull request. The first version also tried
+  to run the ledger validators, but `runs/` is gitignored per
+  AGENTS.md (the directory holds prior-run evidence and is
+  default-deny), so the validator step was moved to a comment
+  explaining that the validators stay local. Whitelist for
+  `.github/` added to `.gitignore`. Commits: `f7af214`,
+  `1f008b4`.
+
+### Known issues (tracked, not yet resolved)
+
+- `pool_list` is filtered to titles that begin with `[NN]` (or
+  `[NN]s[MM]` for sub-agents). Sessions whose title was created
+  without the bracket prefix are not enumerated by `pool` and
+  cannot be resolved by `session-id`. This is a pre-existing
+  contract for `sub_create_worker` (the title is set to the
+  worker name; the bracket prefix is added at session creation,
+  but the exact field where it is set is in the same code path
+  that some parallel sessions have been observed to bypass).
+  Resolution requires a decision about whether to retroactively
+  fix the `sub_create_worker` title format (breaking change for
+  any workflow that scrapes the title) or to maintain a
+  parallel index that maps sessionIDs to their intended
+  `[NN] Name` regardless of what the title actually says.
+  Tracked here so the decision is visible; not part of v1.0.0.
+
 ## [1.0.0] - 2026-10-03
 
 First public release of the OpenCode V2 two-level orchestration skill.
