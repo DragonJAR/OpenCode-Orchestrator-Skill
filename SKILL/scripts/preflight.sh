@@ -30,6 +30,7 @@ if command -v "$CLI" >/dev/null 2>&1; then
   URL=$("$CLI" service status 2>/dev/null | awk '/^https?:\/\//{print $1; exit}')
 fi
 if [ -z "$URL" ] && [ -f "$REG" ]; then
+  # shellcheck disable=SC1003  # tr -d '\\' backslash is correct for tr (deletes single quotes from JSON)
   URL=$(awk 'match($0,/"url":"https?:[^"]+/){print substr($0,RSTART+7,RLENGTH-7); exit}' "$REG" | tr -d '\\')
   VERSION=$(awk 'match($0,/"version":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}' "$REG")
 fi
