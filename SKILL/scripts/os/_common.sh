@@ -55,6 +55,7 @@ parse_kv() {
   # silently, so `init-run --workers "T1" "T2" "T3"` created only T1 with no
   # warning. They are now added to WORKERS (see sub_init_run).
   POSITIONAL=""; WORKER_TITLES=""
+  # shellcheck disable=SC2034  # TITLE/AGENT/MODEL/WORKER_ID are populated by parse_kv and read by callers (sub_create_worker, sub_send_prompt, etc.); shellcheck can't see across function boundaries
   while [ $# -gt 0 ]; do
     case "$1" in
       --title) TITLE="${2:-}"; shift 2 ;; --title=*) TITLE="${1#--title=}"; shift ;;
