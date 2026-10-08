@@ -20,8 +20,16 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR="/tmp/orchestrate-$PROJ_HASH"
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
 # --- http ---------------------------------------------------------------------
-http_get() { curl -fsS -m 30 "${AUTH:-}" "$1"; }
-http_post_json() { curl -fsS -m 30 "${AUTH:-}" -H 'Content-Type: application/json' -d "$2" "$1"; }
+# NOTE: AUTH is intentionally unquoted. The basic-auth password used by
+# OpenCode contains characters that, when wrapped in one argument via
+# shell word splitting, change how curl parses the colon-separated user:pass
+# pair (some curl versions split on the colon and treat the right-hand side
+# as a URL, yielding HTTP 401). With AUTH as separate words (no surrounding
+# quotes), curl sees '-u' followed by 'user:pass' as two separate arguments
+# and authenticates correctly. Quoting would re-break this path; the
+# shellcheck SC2086 warning is a known false positive here.
+http_get() { curl -fsS -m 30 ${AUTH:-} "$1"; }
+http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json' -d "$2" "$1"; }
 
 # --- json (jq-less; awk) --------------------------------------------------------
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
