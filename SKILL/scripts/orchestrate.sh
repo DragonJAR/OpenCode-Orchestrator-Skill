@@ -628,6 +628,54 @@ $TARGET
 EOF
 }
 
+# session-id COMPACT_REF -> prints the raw sessionID (ses_XXX) for a project
+# session whose title matches COMPACT_REF (a worker compact id, e.g. 00, 01,
+# 01s02, [01], or [01s02]). Resolves the helper parse_short_id (which
+# removes optional brackets and splits on 's' for sub-agents), queries the
+# /api/session pool, and prints the first match's id. -1 if not found.
+sub_session_id() {
+  COMPACT="${1:-}"
+  [ -n "$COMPACT" ] || die "session-id: COMPACT_REF required (e.g. 00, 01, 01s02, [01], or [01s02])"
+  PARTS=$(parse_short_id "$COMPACT")
+  [ -n "$PARTS" ] || die "session-id: invalid compact ref: $COMPACT (want NN, NNsMM, [NN], or [NN]s[MM])"
+  set -- $PARTS
+  PARENT="$1"; SUB="${2:-}"
+  require_state
+  AUTH=$(auth_flag 2>/dev/null || printf '')
+  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || die "session-id: /api/session failed"
+  printf '%s' "$RESP" | python3 -c "
+import json, sys, re
+d = sys.argv[1]
+pat = re.escape(sys.argv[2]) + r'(?:\\s|\\$)'
+data = json.loads(sys.stdin.read()).get('data', [])
+for s in data:
+    if s.get('location', {}).get('directory', '') != d:
+        continue
+    title = s.get('title', '')
+    if re.search(pat, title):
+        print(s.get('id', ''))
+        sys.exit(0)
+sys.exit(1)
+" "$PROJ_DIR" "\\[${PARENT}${SUB:+\\]s\\[}${SUB:-}\\]" >/dev/null 2>&1
+  # Re-run with output capture (python3 inline output not reliable across all sh -> python stdin handling)
+  RESULT=$(printf '%s' "$RESP" | python3 -c "
+import json, sys, re
+d = sys.argv[1]
+sub = sys.argv[2]
+parent = sys.argv[3]
+title_pat = re.compile(r'\\[' + parent + (r'\\]s\\[' + sub if sub else r'\\]') + r'(?=\\s|\$)')
+data = json.loads(sys.stdin.read()).get('data', [])
+for s in data:
+    if s.get('location', {}).get('directory', '') != d:
+        continue
+    if title_pat.search(s.get('title', '')):
+        print(s.get('id', ''))
+        sys.exit(0)
+sys.exit(1)
+" "$PROJ_DIR" "$SUB" "$PARENT") || { echo "session-id: $COMPACT not found in this project" >&2; exit 1; }
+  printf '%s\n' "$RESULT"
+}
+
 sub_help() {
   cat <<'USAGE'
 orchestrate.sh [--os <darwin|linux|wsl|windows-gbash>] <subcmd> [args]
@@ -694,6 +742,7 @@ case "$SUBCMD" in
   pool) sub_pool "$@" ;;
   tabs) sub_tabs "$@" ;;
   verify-daughters) sub_verify_daughters "$@" ;;
+  session-id) sub_session_id "$@" ;;
   delete-session) sub_delete_session "$@" ;;
   dispatch) sub_dispatch "$@" ;;
   ""|-h|--help|help) sub_help; exit 0 ;;
