@@ -20,8 +20,8 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR="/tmp/orchestrate-$PROJ_HASH"
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
 # --- http ---------------------------------------------------------------------
-http_get() { curl -fsS -m 30 ${AUTH:-} "$1"; }
-http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json' -d "$2" "$1"; }
+http_get() { curl -fsS -m 30 "${AUTH:-}" "$1"; }
+http_post_json() { curl -fsS -m 30 "${AUTH:-}" -H 'Content-Type: application/json' -d "$2" "$1"; }
 
 # --- json (jq-less; awk) --------------------------------------------------------
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
