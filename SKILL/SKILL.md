@@ -5,7 +5,7 @@ license: MIT
 compatibility: "Operating OpenCode V2 requires authorized access to an instance; without access, limit the work to planning. Validators: POSIX sh + awk, scripts with LF line endings (Windows: Git Bash or WSL)."
 metadata:
   author: DragonJAR.org
-  skill_version: "1.0.0"
+  skill_version: "1.0.1"
   category: workflow-automation
   tags: [opencode, orchestration, subagent, dag, session-management, parallel-execution, permissions]
 ---

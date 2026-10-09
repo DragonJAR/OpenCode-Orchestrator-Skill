@@ -4,10 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.1] - 2026-10-08
 
-Post-v1.0.0 fixes that ship in the next release. Each entry cites the
+Patch release over v1.0.0. Closes the post-v1.0.0 RSI run (cycles
+1-26 in `RSI_LOG.md`) and ships the 1 new subcommand + the
+shellcheck reductions + the CI workflow. Each entry cites the
 commit that introduced it (no other source of truth).
+
+### Summary
+
+- 1 new public subcommand: `orchestrate.sh session-id COMPACT_REF`.
+- 14 shellcheck reductions: 33 warnings → 4 (−88%); 22 info → 4
+  (−82%); 55 total → 8 total findings (−85%). 0 errors throughout.
+- New CI: `.github/workflows/ci.yml` runs `shellcheck` + `sh -n`
+  on every push and pull request to `main` (Linux runner; 2/2
+  steps green).
+- 1 regression introduced and reverted (cycle 13): the
+  `${AUTH:-}` quoting in `os/_common.sh` http wrappers caused
+  HTTP 401; the unquoted form is restored and documented inline.
+- 0 changes to the public API of `watch_run.sh`; the short
+  flags `-s` and `-a` are preserved (they are part of the
+  public API documented in `watch_run.sh`'s help text).
+- Validators `7/0 / 7/0 / 4/0` (strict / --allow-degraded /
+  dag-only) on the replica ledger; all stable.
+- Round-trip `local == origin/main`; tag `v1.0.1` points to
+  this release.
 
 ### Fixed
 

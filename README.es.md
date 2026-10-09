@@ -1,7 +1,7 @@
 # OpenCode Orchestrator Skill
 
 [![Licencia](https://img.shields.io/badge/licencia-MIT-blue.svg)](SKILL/LICENSE)
-[![Versión](https://img.shields.io/badge/versi%C3%B3n-2.1.0-green.svg)](SKILL/SKILL.md)
+[![Versión](https://img.shields.io/badge/versi%C3%B3n-1.0.1-green.svg)](SKILL/SKILL.md)
 [![Plataforma](https://img.shields.io/badge/plataforma-OpenCode%20V2-8A2BE2.svg)](https://opencode.ai)
 [![Autor](https://img.shields.io/badge/autor-DragonJAR%20SAS-orange.svg)](https://www.DragonJAR.org)
 [![English](https://img.shields.io/badge/read%20in-English-blue.svg)](README.md)
