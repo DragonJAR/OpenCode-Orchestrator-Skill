@@ -2,7 +2,7 @@
 
 The child does not receive the parent's full conversation. Copy and complete the appropriate template with confirmed facts, identity, explicit location, scope, constraints, deliverable, and criterion. Include no secrets or credentials; treat anything unverified as unknown. The orchestrator is the sole owner of ledger schema 3; it pre-registers the child tasks and reads the result through that session's confirmed capability. An optional `run.max_sessions_in_flight` follows the rule in [ledger-template.md](ledger-template.md#optional-max_sessions_in_flight-limit); the worker adds no fields and does not change the ledger. Do not presume a message channel between independent root sessions. Only if the user asked for TUI tabs, use the [local recipe](recipe-tui-tabs.md) after confirming the active version's path and schema.
 
-**Who writes the evidence:** each subagent child writes its own `evidence_refs` file inside its assigned `scope_escritura` using the canonical YAML format (or includes it in its deliverable to the worker, who integrates it into its report — template 5 — so the orchestrator persists it); the worker produces the integrated YAML block inside its report, and the orchestrator verifies it and saves it as the worker's `evidence_refs` file. Neither the worker nor the children write the ledger.
+**Who writes the evidence:** each subagent child writes its own `evidence_refs` file inside its assigned `scope_escritura` using the canonical YAML format (or includes it in its deliverable to the worker, who integrates it into its report — template 5 — so the orchestrator persists it); the worker produces the integrated YAML block inside its report, and the orchestrator verifies it and persists the block in its own orchestrator evidence file (per R14a, the orchestrator does not write into the worker's `evidence_refs` file). Neither the worker nor the children write the ledger.
 
 ## Selection
 
@@ -142,4 +142,4 @@ Minimum: [number of children with distinct non-null sessionIDs, inspected and in
 Proposed final state: [verified only if the minimum, integration, and evidence agree; partial if progress was incomplete; blocked/failed per the cause].
 ~~~~
 
-The orchestrator cross-checks `subagent_results_integrated` against the child rows and their `sessionID`s/states, confirms the children with `GET /api/session?parentID=WORKER_SESSION_ID` (it does not trust the report's IDs), inspects the worker's artifact, saves the YAML above as the evidence file, and records the ledger's final state.
+The orchestrator cross-checks `subagent_results_integrated` against the child rows and their `sessionID`s/states, confirms the children with `GET /api/session?parentID=WORKER_SESSION_ID` (it does not trust the report's IDs), inspects the worker's artifact, persists the YAML above in its own orchestrator evidence file (R14a prohibits writing into the worker's `evidence_refs` file), and records the ledger's final state.

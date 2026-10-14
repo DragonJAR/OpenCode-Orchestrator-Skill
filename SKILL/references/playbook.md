@@ -124,6 +124,7 @@ A worker's `verified` gate (minimum of two distinct subagents, correct `parentID
 6. Inherited scopes; overlapping siblings serialized; the parent did not write into active scopes; timeout reconciled before release.
 7. If `run.max_sessions_in_flight` appears, it satisfies the [optional limit rule](ledger-template.md#optional-max_sessions_in_flight-limit).
 8. Artifacts checked against criteria; limitations and pending integration points are recorded in the close-out.
+9. Session identity is also persisted in `runs/RUN_ID/*.id` files (R15); the orchestrator's `runs/<run>/` directory is the on-disk source of truth for session-to-run mapping and is the registry consulted by `orchestrate.sh sessions`.
 
 ### Failure paths
 
