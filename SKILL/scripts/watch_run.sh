@@ -7,6 +7,13 @@
 # Prints one line per state transition: TS idle=<y/n> outcome=<x> artifacts=<n/m> [awaiting-approval]
 # shellcheck source-path=scripts
 set -u
+# Deterministic collation for the awk field extraction below (ASCII JSON keys).
+LC_ALL=C
+export LC_ALL
+# A watcher killed by the orchestrator (SIGTERM) or the operator (Ctrl-C)
+# otherwise dies silently with no final state line: the log ends without
+# DONE/TIMEOUT and the caller cannot distinguish "killed" from "still running".
+trap 'printf "%s\n" "watch_run: INTERRUPTED"; exit 143' TERM INT
 SESSION=""; ARTIFACTS=""; DEADLINE=1200; INTERVAL=15
 while getopts ":s:a:d:i:" opt; do
   case "$opt" in
@@ -35,7 +42,10 @@ while : ; do
   IFS=$oldIFS
   total=$(printf '%s' "$ARTIFACTS" | awk -F, '{print NF}')
   warn=""
-  if [ -n "$OPENCODE_PW" ]; then
+  # ${OPENCODE_PW:-}: sub_watch only exports it when the cache holds a password;
+  # the bare $OPENCODE_PW here aborted the whole watcher with "unbound variable"
+  # under set -u on no-auth instances (line 24 already used the :- form).
+  if [ -n "${OPENCODE_PW:-}" ]; then
     plist=$(curl -s -m 10 "$AUTH" "$OPENCODE_URL/api/session/$SESSION/permission" 2>/dev/null | tr -d ' \n' | awk 'match($0,/"data":\[[^]]*\]/){print substr($0,RSTART+8,RLENGTH-9); exit}')
     [ -n "$plist" ] && warn="awaiting-approval"
   fi

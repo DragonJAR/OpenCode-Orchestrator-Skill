@@ -5,7 +5,15 @@
 os_project_dir() { pwd -P; }
 os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
   # Path resolved by tabs_json_path (SINGLE SOURCE); only flock(1) + drvfs here.
-  _tabs=$(tabs_json_path) || { printf 'tabs_status=no-tui\n'; return 4; }
+  # ORCHESTRATE_TABS_JSON is exported so the python writes EXACTLY the file
+  # flocked below (same contract as darwin.sh/windows-gbash.sh; see linux.sh
+  # for the lock-vs-write divergence this closes).
+  if [ -n "${ORCHESTRATE_TABS_JSON:-}" ]; then
+    _tabs="$ORCHESTRATE_TABS_JSON"
+  else
+    _tabs=$(tabs_json_path) || { printf 'tabs_status=no-tui\n'; return 4; }
+    export ORCHESTRATE_TABS_JSON="$_tabs"
+  fi
   case "$_tabs" in
     /mnt/[a-zA-Z]/*) printf 'tabs_status=fail-closed (state on drvfs: unreliable lock)\n' >&2; return 3 ;;
   esac

@@ -11,6 +11,10 @@
 #        OPENCODE_SESSION_ID (root session hint when orchestrating in-session).
 # Exit codes: 0 = ok, 1 = discovery failure, 2 = usage/environment error.
 set -u
+# Deterministic collation for every awk/sort/grep below (same convention as
+# validate_dag.sh / validate_ledger_closed.sh; matches are ASCII JSON keys).
+LC_ALL=C
+export LC_ALL
 # shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
 # shellcheck source-path=scripts
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -76,7 +80,15 @@ printf 'agents_primary=%s\nagents_subagent=%s\n' "${P:-none}" "${S:-none}"
 MD=$(curl -s -m 10 "$AUTH" "$URL/api/model/default" | tr -d ' \n')
 MID=$(printf '%s' "$MD" | awk 'match($0,/"modelID":"[^"]+/){print substr($0,RSTART+11,RLENGTH-11); exit}')
 PROV=$(printf '%s' "$MD" | awk 'match($0,/"providerID":"[^"]+/){print substr($0,RSTART+14,RLENGTH-14); exit}')
-printf 'model_default=%s@%s\n' "${MID:-none}" "${PROV:-none}"
+# Fail-closed: caching a bogus pair (none@none) poisoned every session created
+# afterwards -- model.id "none" is non-empty, so send-prompt's empty-model
+# guard does NOT catch it and the failure surfaces later as an opaque 0-token
+# outcome=failed. require_state makes this key mandatory downstream anyway.
+if [ -z "$MID" ] || [ -z "$PROV" ]; then
+  printf '%s\n' "ERROR: /api/model/default returned no modelID/providerID pair; refusing to cache a bogus model_default" >&2
+  exit 1
+fi
+printf 'model_default=%s@%s\n' "$MID" "$PROV"
 
 # 7) root session hint
 if [ -n "${OPENCODE_SESSION_ID:-}" ]; then
