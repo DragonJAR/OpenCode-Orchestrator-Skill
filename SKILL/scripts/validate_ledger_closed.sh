@@ -52,7 +52,12 @@ SCRIPT_DIR=$(dirname "$0") || exit 2
 # parse_scalar, split_items and list_items live in _validators.awk and are
 # prepended to BOTH awk programs below. Never re-define them here.
 _VAL_LIB=""
-[ -f "$SCRIPT_DIR/_validators.awk" ] && _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
+if [ -f "$SCRIPT_DIR/_validators.awk" ]; then
+  _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
+else
+  printf 'ERROR: shared awk library missing: %s/_validators.awk\n' "$SCRIPT_DIR" >&2
+  exit 2
+fi
 DAG_VALIDATOR=$SCRIPT_DIR/validate_dag.sh
 [ -f "$DAG_VALIDATOR" ] && [ -r "$DAG_VALIDATOR" ] || {
   printf 'ERROR: DAG validator missing: %s\n' "$DAG_VALIDATOR" >&2

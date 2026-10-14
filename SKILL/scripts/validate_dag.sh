@@ -22,7 +22,12 @@ export LC_ALL
 # shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 _VAL_LIB=""
-[ -f "$SCRIPT_DIR/_validators.awk" ] && _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
+if [ -f "$SCRIPT_DIR/_validators.awk" ]; then
+  _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
+else
+  printf 'ERROR: shared awk library missing: %s/_validators.awk\n' "$SCRIPT_DIR" >&2
+  exit 2
+fi
 command -v awk >/dev/null 2>&1 || { printf 'ERROR: awk not available\n' >&2; exit 2; }
 
 if [ "$#" -ne 1 ]; then
