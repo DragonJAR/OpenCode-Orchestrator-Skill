@@ -21,3 +21,6 @@
 **/*.tmp
 **/.idea/**
 **/.vscode/**
+
+# Backups de sesiones concurrentes (revert/rollback de fixes in-progress del fleet)
+**/*.bak
