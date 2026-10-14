@@ -26,6 +26,8 @@ run:
     tabs_scope: "current-client"
     active_tab_hint: "optional-ui-hint"
   min_subagents_per_worker: 2
+tasks: []
+~~~~
 
 ## Optional `run.client` block
 
@@ -35,8 +37,6 @@ The validators accept (and the `attach-tabs` helper writes) an optional `run.cli
 - `active_tab_hint`: free-form string for the TUI to show an active tab (not used by the validators).
 
 When this block appears, the validator accepts the `tabs_scope` and `active_tab_hint` keys and rejects any other key under `client`. If it is absent, the validators do not require it. The canonical documentation of the tabs mechanism is in `recipe-tui-tabs.md`.
-tasks: []
-~~~~
 
 - `mode` is a ledger convention: `shared-default`, `explicit-server` or `standalone`. Record what was observed (`shared-default` by default on a local client); the semantics of the CLI flags (`--server`, `--standalone`) requires verification with your installation's help ([api-and-sessions.md](api-and-sessions.md#call-transport)).
 - `min_subagents_per_worker` must be exactly `2`. `max_sessions_in_flight` is optional and is governed by the section [Optional `max_sessions_in_flight` limit](#optional-max_sessions_in_flight-limit).

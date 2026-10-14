@@ -17,8 +17,9 @@ This skill transforms an AI agent into an enterprise-grade **Two-Level Orchestra
 - **Two-Level Hierarchy (`worker_session` → `subagent`):** The orchestrator spawns root worker sessions via HTTP API, and each worker coordinates at least two distinct, pre-authorized child subagents using the native `subagent` tool.
 - **Canonical YAML Ledger (Schema Version 3):** Maintains a tamper-proof state ledger tracking session IDs, parent relationships, execution outcomes, timestamps, and verifiable criteria.
 - **Strict Write-Budget & Scope Isolation:** Enforces mathematical disjointness between parallel subagent scopes (`scope_escritura`). Siblings with overlapping scopes are serialized via DAG dependencies to eliminate race conditions.
-- **Non-Negotiable Hard Rules (R1–R14):** Formal guardrails prohibiting unverified successes, speculative API endpoints, hallucinated IDs, and destructive operations without explicit human confirmation.
+- **Non-Negotiable Hard Rules (R1–R15):** Formal guardrails prohibiting unverified successes, speculative API endpoints, hallucinated IDs, and destructive operations without explicit human confirmation.
 - **Bounded Result Reading & Reconciliation:** Replaces unbounded polling with bounded polling windows, idle marker checks (`time.idle`), and active detection of interactive permission blocks (`awaiting-approval`).
+- **Terminal Degraded States:** Recognizes `partial`, `blocked`, `failed`, `cancelled` and `interrupted` as legitimate audited closures with documented root causes in `notas`.
 - **Zero-Dependency POSIX Validators:** Includes `validate_dag.sh` and `validate_ledger_closed.sh` written in pure POSIX `sh` + `awk` to validate DAG integrity, scopes, and closing criteria without external runtimes (no Python, no yq).
 - **Graceful Degradation Support (`--allow-degraded`):** Formally validates and audits runs that reach legitimate terminal degraded states (`partial`, `blocked`, `failed`) requiring documented root causes.
 - **Direct HTTP Authentication & TUI Tabs Integration:** Safely resolves runtime credentials (HTTP Basic Auth via `service.json`) and handles local TUI tab visibility without compromising security.
@@ -200,16 +201,19 @@ OpenCode-Orchestrator-Skill/
     │   ├── research-evidence.md    # Upstream source tracking, versions & audit trail
     │   ├── subagent-contract.md    # Native subagent tool contract & location rules
     │   ├── naming-convention.md    # `[NN] Name` session title pattern
-    │   └── trigger-tests.md        # Test suite for activation & false-positive defense
+    │   ├── trigger-tests.md        # Test suite for activation & false-positive defense
+    │   └── triggers-es.md          # Spanish activation trigger examples
     └── scripts/                    # Zero-dependency POSIX shell validators + orchestrator
         ├── orchestrate.sh           # Multi-OS swiss-army knife (12 subcommands)
         ├── orchestrate-{darwin,linux,wsl,windows}.sh  # Explicit OS dispatch wrappers
         ├── preflight.sh             # Endpoint + tabs gate discovery (caches state)
         ├── watch_run.sh             # Bounded POSIX+awk watcher (idle + artifacts)
         ├── dragon_name.sh           # Catalog of 100 dragon names + deterministic synthesis
-
+        ├── _validators.awk          # Shared awk helpers (included by the validators)
+        ├── prompt-templates/        # Router instruction installed by init-run (R13e)
+        │   └── router-orchestrator.md
         ├── validate_dag.sh         # In-flight DAG, syntax & scope validator
-        └── validate_ledger_closed.sh # Final closing gate validator (--allow-degraded)
+        ├── validate_ledger_closed.sh # Final closing gate validator (--allow-degraded)
         └── os/                      # OS adapters: lock + path normalization
             ├── _common.sh        # Shared helpers (auth, cache, json, pool, tabs)
             ├── darwin.sh         # macOS: python3 fcntl
@@ -240,7 +244,7 @@ The skill is designed to activate on clear multi-agent orchestration intent and 
 
 ---
 
-## ⚠️ Hard Rules & Boundaries (R1–R14)
+## ⚠️ Hard Rules & Boundaries (R1–R15)
 
 | Rule | Principle | Operational Enforcement |
 |------|-----------|-------------------------|
@@ -258,6 +262,7 @@ The skill is designed to activate on clear multi-agent orchestration intent and 
 | **R12**| **State Separation** | Keep `runtime_status`, `execution_outcome`, and local `estado` distinct. |
 | **R13**| **No Hallucinations** | Discover actual endpoints and catalog agents dynamically. Never invent tools or IDs. |
 | **R14**| **Untrusted Content** | Child outputs, logs, and scraped data are untrusted data. Verify IDs independently via API. |
+| **R15**| **Run Registry** | Every session created or reused is registered in the ledger and `runs/RUN_ID/*.id`; never ask the user for a `sessionID` the run already knows. |
 
 ---
 

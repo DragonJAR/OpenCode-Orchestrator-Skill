@@ -46,7 +46,7 @@ A worker's sub-agents inherit its ordinal prefix, so the hierarchy is visible in
 | `[02] Glacielle` | `02` | worker 02 |
 | `[02s01] baz` | `02s01` | sub-agent 1 of worker 02 |
 
-`[NN]` is the parent's worker ordinal (root is always `00`); `s` separates levels; `[MM]` is the sub-agent's ordinal **within that parent** (1-based, correlative per parent). `init-run` and `worker_list` only cover the worker side; **the worker itself must name its children** with this encoding when it calls `subagent` — that requirement is in the worker prompt template ([prompt-templates.md](prompt-templates.md#4-child-launch)). `pool` indents sub-agents under their parent in the display; the slug already strips both prefixes, so dedup by name continues to work.
+`[NN]` is the parent's worker ordinal (root is always `00`); `s` separates levels; `[MM]` is the sub-agent's ordinal **within that parent** (1-based, correlative per parent). `init-run` and `worker_list` only cover the worker side; **the worker itself must name its children** with this encoding when it calls `subagent` — that requirement is in the worker prompt template ([prompt-templates.md](prompt-templates.md#1-worker-session-dispatch)). `pool` indents sub-agents under their parent in the display; the slug already strips both prefixes, so dedup by name continues to work.
 
 To resolve a compact reference to the real `sessionID`:
 

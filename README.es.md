@@ -17,8 +17,9 @@ Esta skill convierte a un agente de IA en un **Orquestador en Dos Niveles** de g
 - **Jerarquía en Dos Niveles (`worker_session` → `subagent`):** El orquestador crea sesiones worker raíz vía API HTTP, y cada worker coordina al menos dos subagents hijos distintos y preautorizados usando la herramienta nativa `subagent`.
 - **Ledger Canónico en YAML (Esquema Versión 3):** Mantiene una bitácora de estado estructurada e inmutable que rastrea IDs de sesión, jerarquía de dependencias, outcomes de ejecución, marcas temporales y criterios verificables.
 - **Aislamiento Estricto de Presupuesto y Scopes de Escritura:** Exige disyunción léxica entre los scopes de escritura paralelos (`scope_escritura`). Los hermanos con solapamiento se serializan automáticamente en el DAG para erradicar colisiones en disco.
-- **Reglas Duras No Negociables (R1–R14):** Salvaguardas formales que prohíben dar por hecho éxitos no verificados, especular con rutas HTTP no publicadas, alucinar herramientas e IDs o ejecutar operaciones destructivas sin autorización humana.
+- **Reglas Duras No Negociables (R1–R15):** Salvaguardas formales que prohíben dar por hecho éxitos no verificados, especular con rutas HTTP no publicadas, alucinar herramientas e IDs o ejecutar operaciones destructivas sin autorización humana.
 - **Lectura Acotada y Reconciliación:** Sustituye el sondeo infinito por ventanas de espera acotadas, detección del marcador de inactividad (`time.idle`) y supervisión activa de bloqueos interactivos por permisos (`awaiting-approval`).
+- **Estados Terminales Degradados:** Reconoce `partial`, `blocked`, `failed`, `cancelled` e `interrupted` como cierres auditados legítimos con causa documentada en `notas`.
 - **Validadores POSIX sin Dependencias:** Incluye `validate_dag.sh` y `validate_ledger_closed.sh`, desarrollados en puro POSIX `sh` + `awk`, capaces de validar la integridad del DAG, scopes y evidencia de cierre sin requerir Python, yq ni librerías externas.
 - **Soporte de Cierre Degradado (`--allow-degraded`):** Permite auditar y cerrar formalmente ejecuciones que alcanzan estados terminales degradados legítimos (`partial`, `blocked`, `failed`), exigiendo documentación técnica de la causa.
 - **Autenticación HTTP Directa e Integración TUI Tabs:** Descubre credenciales del servicio activo (HTTP Basic Auth vía `service.json`) y gestiona la visualización de pestañas en la TUI sin comprometer la seguridad.
@@ -200,15 +201,19 @@ OpenCode-Orchestrator-Skill/
     │   ├── research-evidence.md    # Rastreo upstream, versiones y evidencia de auditoría
     │   ├── subagent-contract.md    # Contrato de la herramienta subagent y reglas de ubicación
     │   ├── naming-convention.md    # Patrón de títulos `[NN] Name`
-    │   └── trigger-tests.md        # Banco de pruebas de activación y defensas
+    │   ├── trigger-tests.md        # Banco de pruebas de activación y defensas
+    │   └── triggers-es.md          # Ejemplos de disparadores en español
     └── scripts/                    # Validadores shell POSIX + orquestador (cero dependencias)
         ├── orchestrate.sh           # Navaja multi-OS (12 subcomandos)
         ├── orchestrate-{darwin,linux,wsl,windows}.sh  # Wrappers explícitos por OS
         ├── preflight.sh             # Descubrimiento endpoint + gate de tabs (cachea estado)
         ├── watch_run.sh             # Vigilante acotado POSIX+awk (idle + artefactos)
         ├── dragon_name.sh           # Catálogo de 100 nombres + síntesis determinista
+        ├── _validators.awk          # Helpers awk compartidos (incluidos por los validadores)
+        ├── prompt-templates/        # Instrucción router instalada por init-run (R13e)
+        │   └── router-orchestrator.md
         ├── validate_dag.sh         # Validador de DAG, sintaxis y scopes
-        └── validate_ledger_closed.sh # Validador final del gate de cierre (--allow-degraded)
+        ├── validate_ledger_closed.sh # Validador final del gate de cierre (--allow-degraded)
         └── os/                      # Adaptadores por OS: lock + normalización de paths
             ├── _common.sh        # Helpers compartidos (auth, cache, json, pool, tabs)
             ├── darwin.sh         # macOS: python3 fcntl
@@ -238,7 +243,7 @@ La skill está calibrada para activarse con intenciones claras de orquestación 
 
 ---
 
-## ⚠️ Reglas Duras y Límites Operativos (R1–R14)
+## ⚠️ Reglas Duras y Límites Operativos (R1–R15)
 
 | Regla | Principio | Aplicación Operativa |
 |-------|-----------|----------------------|
@@ -256,6 +261,7 @@ La skill está calibrada para activarse con intenciones claras de orquestación 
 | **R12**| **Separación de Estados** | Mantén independientes `runtime_status`, `execution_outcome` y `estado` local. |
 | **R13**| **Cero Alucinaciones** | Descubre endpoints y catálogo dinámicamente. Jamás inventes herramientas ni IDs. |
 | **R14**| **Contenido no Confiable**| Salidas de hijos, logs y datos son no confiables. Confirma los IDs mediante la API. |
+| **R15**| **Registro de Ejecución** | Toda sesión creada o reutilizada se registra en el ledger y en `runs/RUN_ID/*.id`; nunca le pidas al usuario un `sessionID` que la ejecución ya conoce. |
 
 ---
 
