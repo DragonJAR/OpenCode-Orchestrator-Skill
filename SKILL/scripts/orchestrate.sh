@@ -562,6 +562,172 @@ except Exception:
   printf 'deleted=%s children_was=%s\n' "$SID" "$CHILDREN"
 }
 
+# clean: identify + delete every session the orchestrator opened (R7).
+# Usage: orchestrate.sh clean [--orchestrator SID] [--yes] [--force] [--dry-run]
+#
+# Identification algorithm (the "conversation history" part):
+#   1. The orchestrator: auto-detected as the most recent [00]-titled
+#      session in this project (the orchestrator's canonical name), or
+#      pass --orchestrator SID explicitly.
+#   2. Sessions to delete: the orchestrator's direct children (parentID
+#      = orchestrator), all [NN] Name workers in this project (the
+#      orchestrator's naming convention), and their transitive subagents.
+#   3. Exclude: the orchestrator itself; any session in another project.
+# After deletion, the corresponding tab entries in tabs.json are removed
+# (under fcntl lock; portable across darwin/linux/git-bash on python3).
+sub_clean() {
+  ORCH_SID=""; YES=0; FORCE=0; DRY=0
+  # Local flag parsing (parse_kv in _common.sh doesn't know these flags;
+  # adding them there would leak clean-specific args into a shared lib).
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --orchestrator) ORCH_SID="${2:-}"; shift 2 ;;
+      --orchestrator=*) ORCH_SID="${1#--orchestrator=}"; shift ;;
+      --yes) YES=1; shift ;;
+      --force) FORCE=1; shift ;;
+      --dry-run) DRY=1; shift ;;
+      --) shift; break ;;
+      *) printf 'clean: unknown flag: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  if [ -z "$ORCH_SID" ]; then
+    ORCH_SID=$(opencode api GET /api/session 2>/dev/null | python3 -c '
+import json, sys, re
+proj = "'"$PROJ_DIR"'"
+ss = json.load(sys.stdin).get("data", [])
+cands = [s for s in ss if s.get("location",{}).get("directory","") == proj
+         and re.match(r"^\[00\]", s.get("title",""))]
+cands.sort(key=lambda s: s.get("time",{}).get("created", 0), reverse=True)
+if cands: print(cands[0]["id"])
+' 2>/dev/null)
+  fi
+  [ -n "$ORCH_SID" ] || die 'clean: no [00] orchestrator in this project; pass --orchestrator SID'
+  case "$ORCH_SID" in ses_*) : ;; *) die 'clean: --orchestrator must have the ses_ prefix' ;; esac
+
+  # Identify orchestrator-opened sessions in this project
+  TO_DELETE=$(PROJ_DIR="$PROJ_DIR" ORCH_SID="$ORCH_SID" python3 -c '
+import json, os, re, subprocess
+orch = os.environ["ORCH_SID"]; proj = os.environ["PROJ_DIR"]
+seen = {orch}; stack = []
+def get_all(path):
+    """Fetch all pages of a paginated endpoint (50/page, base64 cursor)."""
+    out = []; cursor = None
+    while True:
+        url = path + (f"?cursor={cursor}" if cursor else "")
+        r = subprocess.run(["opencode","api","GET",url], capture_output=True, text=True)
+        try: d = json.loads(r.stdout)
+        except Exception: break
+        out.extend(d.get("data", []) or [])
+        cursor = (d.get("cursor") or {}).get("next")
+        if not cursor: break
+    return out
+# 1. Direct children of the orchestrator
+for c in get_all(f"/api/session?parentID={orch}"):
+    sid = c.get("id")
+    if sid and c.get("location",{}).get("directory","") == proj and sid not in seen:
+        seen.add(sid); stack.append(sid)
+# 2. All [NN] Name workers in this project (orchestrator convention)
+pat = re.compile(r"^\[\d+\](?:s\[\d+\])?\s+")
+for s in get_all("/api/session"):
+    sid = s.get("id")
+    if sid and s.get("location",{}).get("directory","") == proj and pat.match(s.get("title","")) and sid not in seen:
+        seen.add(sid); stack.append(sid)
+# 3. BFS for children (transitive subagents)
+while stack:
+    sid = stack.pop()
+    for c in get_all(f"/api/session?parentID={sid}"):
+        csid = c.get("id")
+        if csid and c.get("location",{}).get("directory","") == proj and csid not in seen:
+            seen.add(csid); stack.append(csid)
+# Final: project, not the orchestrator, sorted by creation
+final = [s for s in get_all("/api/session") if s.get("id") in seen
+         and s.get("location",{}).get("directory","") == proj and s.get("id") != orch]
+final.sort(key=lambda s: s.get("time",{}).get("created", 0))
+for s in final: print(s["id"] + "|" + s.get("title",""))
+' 2>/dev/null)
+
+  N=$(printf '%s\n' "$TO_DELETE" | grep -c '^ses_')
+  if [ "$N" -eq 0 ]; then
+    printf 'clean: no orchestrator-opened sessions in this project\n' >&2
+    return 0
+  fi
+
+  # Preview
+  printf 'clean: %s session(s) to delete:\n' "$N" >&2
+  printf '%s\n' "$TO_DELETE" | while IFS='|' read -r sid title; do
+    [ -n "$sid" ] || continue
+    printf '  %s  %s\n' "$sid" "${title# }" >&2
+  done
+
+  if [ "$DRY" -eq 1 ]; then
+    printf 'clean: --dry-run; no changes applied\n' >&2
+    return 0
+  fi
+
+  # R7 confirmation
+  if [ "$YES" -ne 1 ]; then
+    printf 'clean: type "yes" to delete these %s session(s) [no=abort]: ' "$N" >&2
+    if ! IFS= read -r ans; then printf '\naborted (no input)\n' >&2; exit 2; fi
+    [ "$ans" = "yes" ] || { printf 'aborted\n' >&2; exit 2; }
+  fi
+
+  # Delete each via R7 (reuse the single-session subcommand)
+  TMP=$(mktemp)
+  printf '%s\n' "$TO_DELETE" | while IFS='|' read -r sid title; do
+    [ -n "$sid" ] || continue
+    if sub_delete_session --session "$sid" --yes ${FORCE:+--force} >/dev/null 2>&1; then
+      printf 'ok %s\n' "$sid" >> "$TMP"
+      printf 'clean: deleted %s\n' "$sid" >&2
+    else
+      printf 'fail %s\n' "$sid" >> "$TMP"
+      printf 'clean: FAILED to delete %s\n' "$sid" >&2
+    fi
+  done
+  OK=$(grep -c '^ok ' "$TMP" 2>/dev/null || echo 0)
+  FAIL=$(grep -c '^fail ' "$TMP" 2>/dev/null || echo 0)
+  rm -f "$TMP"
+  [ "$FAIL" -gt 0 ] && printf 'clean: %s delete(s) failed; check logs\n' "$FAIL" >&2
+
+  # Clean tabs.json: remove entries whose sessionID is in the deleted set
+  DELETED_IDS=$(printf '%s\n' "$TO_DELETE" | awk -F'|' '$1 ~ /^ses_/ {print $1}' | tr '\n' ' ')
+  if [ -n "$DELETED_IDS" ]; then
+    TABS_REMOVED=$(PROJ_DIR="$PROJ_DIR" DELETED_IDS="$DELETED_IDS" python3 -c '
+import json, os, fcntl, subprocess
+proj = os.environ["PROJ_DIR"]
+deleted = set(os.environ.get("DELETED_IDS","").split())
+if not deleted or "" in deleted: print(0); raise SystemExit
+proc = subprocess.run(["sh","-c",". ./SKILL/scripts/os/_common.sh >/dev/null 2>&1 && tabs_json_path"],
+                     capture_output=True, text=True, cwd=proj)
+p = proc.stdout.strip()
+if not p or not p.startswith("/"): print(0); raise SystemExit
+try: f = open(p, "r+")
+except FileNotFoundError: print(0); raise SystemExit
+removed = 0
+try:
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    try: d = json.load(f)
+    except Exception: d = {"global":{"tabs":[]}, "cwd":{}}
+    for cwd_key in list(d.get("cwd", {}).keys()):
+        tabs = d["cwd"][cwd_key].get("tabs", [])
+        new = [t for t in tabs if t.get("sessionID") not in deleted]
+        removed += len(tabs) - len(new)
+        d["cwd"][cwd_key]["tabs"] = new
+    if removed:
+        f.seek(0); f.truncate()
+        json.dump(d, f, indent=2)
+finally:
+    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    f.close()
+print(removed)
+' 2>/dev/null)
+    if [ -n "$TABS_REMOVED" ] && [ "$TABS_REMOVED" -gt 0 ] 2>/dev/null; then
+      printf 'clean: removed %s tab(s) from tabs.json\n' "$TABS_REMOVED" >&2
+    fi
+  fi
+
+  printf 'clean: done (%s/%s session(s) deleted)\n' "$OK" "$N" >&2
+}
+
 # dispatch: route a task to one or multiple workers based on complexity.
 # NEVER touches the orchestrator's own context: the prompt is sent to workers
 # and the orchestrator only sees the dispatch summary + (optionally) the wait-idle
@@ -717,6 +883,15 @@ Subcommands:
                                      DELETE /api/session/{id} (verified in the active
                                      /openapi.json; R7 -> checks children and requires confirmation).
                                      --yes: skips prompt. --force: skips the children check.
+  clean [--orchestrator SID] [--yes] [--force] [--dry-run]
+                                      Identify every session the orchestrator opened
+                                      (its direct children, all [NN] Name workers in
+                                      this project, and their transitive subagents) and
+                                      DELETE them. Removes the matching tabs from tabs.json
+                                      after. The orchestrator is auto-detected as the most
+                                      recent [00] session in this project, or pass
+                                      --orchestrator SID. R7: requires confirmation or
+                                      --yes; --force skips the per-session child check.
   dispatch --prompt-file F [--target NN] [--count N|--auto-count] [--wait]
                                      Routes the prompt to an idle worker session (or several,
                                      if complexity or --count warrants). The orchestrator's own
@@ -745,6 +920,7 @@ case "$SUBCMD" in
   verify-daughters) sub_verify_daughters "$@" ;;
   session-id) sub_session_id "$@" ;;
   delete-session) sub_delete_session "$@" ;;
+  clean) sub_clean "$@" ;;
   dispatch) sub_dispatch "$@" ;;
   ""|-h|--help|help) sub_help; exit 0 ;;
   *) printf 'unknown subcommand: %s\n' "$SUBCMD" >&2; sub_help >&2; exit 2 ;;
