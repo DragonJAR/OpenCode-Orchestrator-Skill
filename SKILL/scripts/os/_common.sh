@@ -132,7 +132,7 @@ try:
     shape_ok = isinstance(d, dict) and "global" in d and isinstance(d.get("cwd"), dict)
     if shape_ok and bad_shape(d["global"]): shape_ok = False
     if shape_ok:
-        for k, v in d["cwd"].items():
+        for v in d["cwd"].values():
             if bad_shape(v): shape_ok = False; break
     if shape_ok:
         for scope in [d["global"]] + list(d["cwd"].values()):
@@ -145,12 +145,10 @@ try:
     os.makedirs(bk, exist_ok=True)
     shutil.copyfile(p, os.path.join(bk, "tabs.json.orchbak"))
     tabs = d.setdefault("cwd", {}).setdefault(tui_cwd, {}).setdefault("tabs", [])
-    renamed = False
     for t in tabs:
         if t.get("sessionID") == sid:
             if title and t.get("title") != title:
                 t["title"] = title
-                renamed = True
             break
     else:
         tabs.append({"sessionID": sid, "title": title})
@@ -266,7 +264,7 @@ for s in data:
     idle = s.get('time', {}).get('idle', 0)
     updated = s.get('time', {}).get('updated', 0)
     st = 'idle' if idle and updated and idle >= updated else 'running'
-    print('\t'.join([str(ord), nm, st, '', sid, str(out), str(parent)]))
+    print('\t'.join([str(ord), nm, st, re.sub(r'[ \t]', '', nm), sid, str(out), str(parent)]))
 " "$PROJ_DIR" | sort -t'	' -k7,7 -k1,1n
 }
 

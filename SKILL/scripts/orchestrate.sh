@@ -513,9 +513,10 @@ if not d:
 sys.exit(0 if fail == 0 else 2)'
 }
 
-# delete-session: R7. The active /openapi.json (v2.0.22 verified; the
-# `2.0.21 vs 2.0.22` flap is irrelevant here because the gate is by major)
-# publishes DELETE /api/session/{id}. Gate: enumerates children with GET
+# delete-session: R7. The active /openapi.json (2.0.29 observed
+# 2026-10-14; first verified at v2.0.22, gate is by major so the
+# earlier 2.0.21 / 2.0.22 flap is irrelevant) publishes DELETE
+# /api/session/{id}. Gate: enumerates children with GET
 # ?parentID=; aborts if there are any unless --force is used; without --yes it
 # requires typing "yes" (fail-closed for non-interactive use).
 #
@@ -574,7 +575,7 @@ sub_dispatch() {
 
   # Idle workers in the pool (column 7 = parent, empty for workers; column 3 = state).
   POOL=$(pool_list) || die "dispatch: could not query worker pool"
-  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $4 }')
+  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $5 }')
   N_IDLE=$(printf '%s\n' "$IDLE" | grep -c .)
   [ "$N_IDLE" -gt 0 ] || die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
 

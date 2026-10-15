@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **dispatch was broken end-to-end**: it read the always-empty slug column
+  instead of the sessionID; pool_list now emits a slugified name in column 4
+  (restores create-worker dedup and find_dedup) and dispatch reads column 5.
+- Removed dead code: split_items (0 callers), a write-only shell variable,
+  a never-read python binding, dead env exports in the windows/wsl adapters.
+- Documentation aligned with the live schema (2.0.29): PATCH session.update
+  documented, stale version pins refreshed, session-id subcommand added to
+  the table, parentID listed, broken cross-link repaired.
+
+## [1.0.2] - 2026-10-14
+
+Post-v1.0.0 fleet hardening (2026-10-13 skill review). Tabs lock target
+fixed on linux/wsl; watch_run/preflight guards; clean validator error when
+`_validators.awk` is missing; docs synced with SKILL.md reality (README,
+naming-convention, prompt-templates R14a/R15); gitignore now excludes
+concurrent-session backup files.
+
 ## [1.0.1] - 2026-10-08
 
 Patch release over v1.0.0. Closes the post-v1.0.0 RSI run (cycles

@@ -23,10 +23,6 @@ os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
   }
   _pyf=$(tabs_merge_py_file)
   [ -n "$_pyf" ] || { printf 'os_tabs_merge: could not create the temporary python helper\n' >&2; return 2; }
-  if command -v opencode >/dev/null 2>&1; then
-    _sr=$(opencode debug paths state 2>/dev/null | head -1)
-    [ -n "$_sr" ] && export OPENCODE_STATE_ROOT="$_sr"
-  fi
   # 1) Resolves the tabs.json path (tabs_json_path, SINGLE SOURCE).
   _tj=$(tabs_json_path) || { printf 'tabs_status=no-tui\n'; return 4; }
   export ORCHESTRATE_TABS_JSON="$_tj"

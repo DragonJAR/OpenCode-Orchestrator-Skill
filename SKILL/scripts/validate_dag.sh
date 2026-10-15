@@ -17,7 +17,7 @@ set -u
 LC_ALL=C
 export LC_ALL
 # Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
-# parse_scalar and split_items live in _validators.awk and are prepended to
+# parse_scalar and list_items live in _validators.awk and are prepended to
 # the awk program below. Never re-define them here.
 # shellcheck disable=SC1007  # CDPATH= cd ... | pwd -- the space after = is part of the command substitution syntax (false positive: shellcheck treats = as plain assignment).
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -77,10 +77,10 @@ function parse_list(raw,   i) {
   # Delegates to the shared list_items (single source of truth, S1c-09).
   # Same contract this function always had: strips the brackets, validates
   # every quoted item with parse_scalar, rejects empty items, fills
-  # LIST_VALUE/LIST_COUNT. Direct use of split_items was removed because the
-  # shared split_items takes the FULL bracketed list while this parser used
-  # to pass the bracket-stripped inside: a contract mismatch that silently
-  # dropped every scope_escritura and dependencias list.
+  # LIST_VALUE/LIST_COUNT. (The earlier split_items / shared-list_items
+  # contract mismatch that silently dropped every scope_escritura and
+  # dependencias list is now resolved by the single list_items in
+  # _validators.awk — see validate_ledger_closed.sh for the shared lib.)
   LIST_COUNT = 0
   for (i in LIST_VALUE) delete LIST_VALUE[i]
   if (!list_items(raw, LIST_VALUE)) return 0

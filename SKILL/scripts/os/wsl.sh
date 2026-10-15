@@ -21,7 +21,7 @@ os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
   command -v python3 >/dev/null 2>&1 || { printf 'python3 required for tabs on wsl\n' >&2; return 2; }
   [ -f "$_tabs" ] || { printf 'tabs_status=no-tui\n'; return 4; }
   _pyf=$(tabs_merge_py_file)
-  OPENCODE_TUI_CHANNEL="${OPENCODE_TUI_CHANNEL:-latest}" flock -x "$_tabs" python3 "$_pyf" "$1" "$2" "$3" "$4" none
+  flock -x "$_tabs" python3 "$_pyf" "$1" "$2" "$3" "$4" none
   _rc=$?
   rm -f "$_pyf"
   return $_rc

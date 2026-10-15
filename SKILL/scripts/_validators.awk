@@ -6,9 +6,8 @@
 # program by source concatenation (not with -f, which is not portable when
 # mixed with an inline program in mawk 1.3.3).
 #
-# Contract: parse_scalar sets PVAL/PNULL and accepts allow_null; split_items
-# sets RAW_ITEM[1..n] WITHOUT validating; list_items validates each item with
-# parse_scalar and sets LIST_ITEM[1..LIST_N].
+# Contract: parse_scalar sets PVAL/PNULL and accepts allow_null; list_items
+# validates each item with parse_scalar and sets LIST_ITEM[1..LIST_N].
 
 function trim(s) {
   gsub(/^[ \t]+|[ \t]+$/, "", s)
@@ -49,29 +48,6 @@ function parse_scalar(raw, allow_null,   s, n, i, c, nx, out) {
     else out = out c
   }
   PVAL = out
-  return 1
-}
-
-function split_items(raw, arr,   s, inside, i, c, q, esc, cur, n) {
-  for (i in arr) delete arr[i]
-  q = 0; esc = 0; cur = ""; n = 0
-  s = trim(raw); if (s == "[]") return 1
-  if (length(s) < 2 || substr(s, 1, 1) != "[" || substr(s, length(s), 1) != "]") return 0
-  inside = trim(substr(s, 2, length(s) - 2))
-  if (inside == "") return 0
-  for (i = 1; i <= length(inside); i++) {
-    c = substr(inside, i, 1)
-    if (q) {
-      cur = cur c
-      if (esc) esc = 0
-      else if (c == "\\") esc = 1
-      else if (c == "\"") q = 0
-    } else if (c == "\"") { q = 1; cur = cur c }
-    else if (c == ",") { arr[++n] = cur; cur = "" }
-    else cur = cur c
-  }
-  if (q || esc) return 0
-  arr[++n] = cur
   return 1
 }
 
