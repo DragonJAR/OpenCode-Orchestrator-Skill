@@ -574,7 +574,7 @@ sub_dispatch() {
 
   # Idle workers in the pool (column 7 = parent, empty for workers; column 3 = state).
   POOL=$(pool_list) || die "dispatch: could not query worker pool"
-  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $4 }')
+  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $5 }')
   N_IDLE=$(printf '%s\n' "$IDLE" | grep -c .)
   [ "$N_IDLE" -gt 0 ] || die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
 
