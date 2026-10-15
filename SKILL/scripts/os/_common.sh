@@ -264,7 +264,7 @@ for s in data:
     idle = s.get('time', {}).get('idle', 0)
     updated = s.get('time', {}).get('updated', 0)
     st = 'idle' if idle and updated and idle >= updated else 'running'
-    print('\t'.join([str(ord), nm, st, nm, sid, str(out), str(parent)]))
+    print('\t'.join([str(ord), nm, st, re.sub(r'[ \t]', '', nm), sid, str(out), str(parent)]))
 " "$PROJ_DIR" | sort -t'	' -k7,7 -k1,1n
 }
 
