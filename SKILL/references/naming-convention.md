@@ -94,7 +94,7 @@ These are not hidden defects; they are the price of the decisions above:
 - **Above `[99]`** the width grows to three digits and lexical order stops matching numeric order (`"100" < "99"`). Split the run instead of continuing to number.
 - **Because it is correlative without gaps**, inserting a worker in the middle forces renumbering the following ones. If you expect to grow throughout the run, reserve gaps by hand (`[01]`, `[05]`, `[10]`) instead of letting the correlative fill them.
 - **A title with spaces breaks a space-separated list.** This is not a defect of the pattern: it is why `--worker` exists (see below).
-- **The pattern is enforced only at creation.** `/openapi.json` (verified in v2.0.22) does not publish a session-rename endpoint. `title_normalize 0` and `worker_list` apply the rule only when `ensure-root` / `create-worker` / `init-run` build a new session. If an existing session has a non-canonical title (created via a direct `POST /api/session` call, or one promoted from a previous run), the scripts do not (and cannot) rename it; use the TUI's `/sessions` view to rename by hand. The pool still parses the ordinal out of any title that does carry `[NN]` and shows the actual slug verbatim when it does not.
+- **The pattern is enforced only at creation.** `title_normalize 0` and `worker_list` apply the rule only when `ensure-root` / `create-worker` / `init-run` build a new session. If an existing session has a non-canonical title (created via a direct `POST /api/session` call, or one promoted from a previous run), the scripts do not rename it; use the TUI's `/sessions` view, or `opencode api PATCH /api/session/{id} --data '{"title":"..."}'` (operationId `session.update`, observed 2.0.29 on 2026-10-14) — see [SKILL.md §Title naming convention](../SKILL.md#title-naming-convention) for the canonical statement. The pool still parses the ordinal out of any title that does carry `[NN]` and shows the actual slug verbatim when it does not.
 
 ## Space is not a list delimiter
 
@@ -164,4 +164,4 @@ orchestrate.sh attach-tabs --session SESSION_ID --title "[01] Vermithrax"
 
 The merge updates the title if the `sessionID` already exists, instead of silently deduplicating (fixed behavior; renaming was previously lost). Verify with `tabs_status=ok-verificada-title`.
 
-To rename only the session, without touching the tab, use `session_rename` in the CLI API. Prefer `attach-tabs` when you want both surfaces aligned: a session with one title and a tab with another is inconsistent state.
+To rename only the session, without touching the tab, `opencode api PATCH /api/session/{id} --data '{"title":"..."}'` (operationId `session.update`; the older `session_rename` does not exist in the live schema). Prefer `attach-tabs` when you want both surfaces aligned: a session with one title and a tab with another is inconsistent state.
