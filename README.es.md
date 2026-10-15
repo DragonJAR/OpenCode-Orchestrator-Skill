@@ -186,7 +186,7 @@ OpenCode-Orchestrator-Skill/
 ├── README.es.md                    # Guía completa en español
 └── SKILL/                          # Paquete distribuible de la skill
     ├── LICENSE                     # Licencia MIT
-    ├── SKILL.md                    # Especificación principal, R1-R14, decision gates
+    ├── SKILL.md                    # Especificación principal, R1-R15, decision gates
     ├── references/                 # Guías operativas de referencia
     │   ├── agent-patterns.md       # Reparto worker → subagents y fichas de despacho
     │   ├── agents-and-safety.md    # Catálogo de agentes, permisos y presupuestos

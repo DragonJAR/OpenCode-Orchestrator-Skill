@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Restore `dispatch` to use the sessionID (column 5) instead of the empty
+  slug (column 4) — pool_list's column-4 contract was unfulfilled, so
+  every dispatch landed on a literal empty string and IN-05 fired
+  (`dispatch --target NN` unbound). Two-line coherent fix.
+- Add a `## Session-id: compact reference resolution` heading in
+  `naming-convention.md` so the new SKILL.md table row points at a real
+  anchor (the previous link was broken by the heading mismatch).
+- De-duplicate "prepended to" in `validate_ledger_closed.sh:52-53` and
+  refresh the stale `split_items` mention in `validate_dag.sh:80-83`
+  (the function is gone; the comment now points at the surviving
+  `list_items` in `_validators.awk`).
+- Drop the write-only `integrated=$field10` capture in
+  `validate_ledger_closed.sh:286` and the unused `k` loop variable in
+  `os/_common.sh:135`.
+- Drop the dead `no_Attach` branch in `.coordination/claim_impl.py`
+  (zero callers, case-mismatched with the actual flag, swallowed the
+  next argument on unknown flags).
+- Add `EXIT INT TERM` trap around the package-build `mktemp -d` in
+  `testing-and-iteration.md` to avoid leaking the staged tree on the
+  6 downstream failure sites.
+- `head -1` → `head -n 1` in `.agents/maintenance/scripts/preflight.sh`
+  (cross-OS strictness).
+- `bash` → `sh` in `testing-and-iteration.md:71` to match the shebang
+  of the script it invokes.
+
+### Documentation
+- Add a `PATCH /api/session/{id}` row to the API reference table
+  (the only mutable session field in the live schema is the title).
+- Add a one-line warning in `api-and-sessions.md` about the silent
+  204 on a PATCH with a wrong field name (footgun: easy to miss).
+- Refresh the v2.0.22 pin in `orchestrate.sh:516` to a
+  "2.0.29 observed 2026-10-14, first verified at v2.0.22" form.
+- README.md / README.es.md: R1-R14 → R1-R15 (the actual rule count
+  in `SKILL.md`).
+
 ## [1.0.1] - 2026-10-08
 
 Patch release over v1.0.0. Closes the post-v1.0.0 RSI run (cycles

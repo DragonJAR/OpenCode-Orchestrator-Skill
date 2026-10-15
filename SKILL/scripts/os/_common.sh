@@ -132,7 +132,7 @@ try:
     shape_ok = isinstance(d, dict) and "global" in d and isinstance(d.get("cwd"), dict)
     if shape_ok and bad_shape(d["global"]): shape_ok = False
     if shape_ok:
-        for k, v in d["cwd"].items():
+        for v in d["cwd"].values():
             if bad_shape(v): shape_ok = False; break
     if shape_ok:
         for scope in [d["global"]] + list(d["cwd"].values()):

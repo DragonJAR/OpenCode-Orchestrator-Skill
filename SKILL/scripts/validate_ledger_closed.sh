@@ -50,7 +50,7 @@ export WS_PHYS
 SCRIPT_DIR=$(dirname "$0") || exit 2
 # Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
 # parse_scalar and list_items live in _validators.awk and are prepended to
-# prepended to BOTH awk programs below. Never re-define them here.
+# BOTH awk programs below. Never re-define them here.
 _VAL_LIB=""
 if [ -f "$SCRIPT_DIR/_validators.awk" ]; then
   _VAL_LIB=$(cat "$SCRIPT_DIR/_validators.awk")
@@ -283,7 +283,6 @@ while IFS="$SEP" read -r kind task_id field1 field2 field3 field4 field5 field6 
     path=$field7
     output_is_null=$field8
     evidence_count=$field9
-    integrated=$field10
     notas=$field11
     TASKS=$((TASKS + 1))
     task_bad=0
