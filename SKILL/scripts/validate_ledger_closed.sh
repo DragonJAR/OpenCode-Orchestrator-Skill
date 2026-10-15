@@ -49,7 +49,7 @@ export WS_PHYS
 
 SCRIPT_DIR=$(dirname "$0") || exit 2
 # Shared awk helpers (single source of truth, S1c-09): trim, strip_comment,
-# parse_scalar, split_items and list_items live in _validators.awk and are
+# parse_scalar and list_items live in _validators.awk and are prepended to
 # prepended to BOTH awk programs below. Never re-define them here.
 _VAL_LIB=""
 if [ -f "$SCRIPT_DIR/_validators.awk" ]; then

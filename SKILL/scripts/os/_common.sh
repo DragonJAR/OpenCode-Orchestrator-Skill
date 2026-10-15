@@ -145,12 +145,10 @@ try:
     os.makedirs(bk, exist_ok=True)
     shutil.copyfile(p, os.path.join(bk, "tabs.json.orchbak"))
     tabs = d.setdefault("cwd", {}).setdefault(tui_cwd, {}).setdefault("tabs", [])
-    renamed = False
     for t in tabs:
         if t.get("sessionID") == sid:
             if title and t.get("title") != title:
                 t["title"] = title
-                renamed = True
             break
     else:
         tabs.append({"sessionID": sid, "title": title})
