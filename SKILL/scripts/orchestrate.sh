@@ -697,11 +697,18 @@ for sid in order:
     [ "$ans" = "yes" ] || { printf 'aborted\n' >&2; exit 2; }
   fi
 
-  # Delete each via R7 (reuse the single-session subcommand)
+  # Delete each via opencode api (bypasses the preflight cache: the CLI
+  # handles auth internally and is what the rest of the skill uses to
+  # read/write; sub_delete_session's curl path depends on auth_flag which
+  # is empty when preflight cannot populate the cache, e.g. on opencode
+  # 2.0.29 where /openapi.json fails validation). R7 is preserved by the
+  # topological order above: by the time we reach a session, all of its
+  # children in the set are already gone, so the per-session child
+  # enumeration is not needed for cascade safety.
   TMP=$(mktemp)
   printf '%s\n' "$TO_DELETE" | while IFS='|' read -r sid title; do
     [ -n "$sid" ] || continue
-    if sub_delete_session --session "$sid" --yes ${FORCE:+--force} >/dev/null 2>&1; then
+    if opencode api DELETE "/api/session/$sid" >/dev/null 2>&1; then
       printf 'ok %s\n' "$sid" >> "$TMP"
       printf 'clean: deleted %s\n' "$sid" >&2
     else
