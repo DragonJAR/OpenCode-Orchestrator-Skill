@@ -639,11 +639,37 @@ while stack:
         csid = c.get("id")
         if csid and c.get("location",{}).get("directory","") == proj and csid not in seen:
             seen.add(csid); stack.append(csid)
-# Final: project, not the orchestrator, sorted by creation
-final = [s for s in get_all("/api/session") if s.get("id") in seen
-         and s.get("location",{}).get("directory","") == proj and s.get("id") != orch]
-final.sort(key=lambda s: s.get("time",{}).get("created", 0))
-for s in final: print(s["id"] + "|" + s.get("title",""))
+# 4. Build the children map (within our deletion set) for topological ordering.
+#    Delete children BEFORE their parents so per-session R7 (which
+#    aborts on a non-zero child count) passes without --force. This is the
+#    key insight: keep R7 per-session safety AND cascade by default,
+#    without changing the meaning of --yes or --force.
+children_of = {sid: [] for sid in seen}
+for sid in seen:
+    for c in get_all(f"/api/session?parentID={sid}"):
+        csid = c.get("id")
+        if csid in seen:
+            children_of[sid].append(csid)
+# 5. DFS post-order: visit children first, then the node. Result is
+#    the deletion order (leaves before parents, parents with no in-set
+#    children first, deepest workers last). Cycles are impossible
+#    (parentID is a tree from the API), so no cycle handling needed.
+visited = set()
+order = []
+def visit(n):
+    if n in visited: return
+    visited.add(n)
+    for c in children_of.get(n, []):
+        visit(c)
+    order.append(n)
+for n in seen:
+    visit(n)
+# 6. Output: project, not the orchestrator, in topological deletion order
+session_info = {s["id"]: s for s in get_all("/api/session")}
+for sid in order:
+    if sid == orch: continue
+    info = session_info.get(sid, {})
+    print(sid + "|" + info.get("title",""))
 ' 2>/dev/null)
 
   N=$(printf '%s\n' "$TO_DELETE" | grep -c '^ses_')
@@ -683,8 +709,8 @@ for s in final: print(s["id"] + "|" + s.get("title",""))
       printf 'clean: FAILED to delete %s\n' "$sid" >&2
     fi
   done
-  OK=$(grep -c '^ok ' "$TMP" 2>/dev/null || echo 0)
-  FAIL=$(grep -c '^fail ' "$TMP" 2>/dev/null || echo 0)
+  OK=$(grep -c '^ok ' "$TMP" 2>/dev/null; true)
+  FAIL=$(grep -c '^fail ' "$TMP" 2>/dev/null; true)
   rm -f "$TMP"
   [ "$FAIL" -gt 0 ] && printf 'clean: %s delete(s) failed; check logs\n' "$FAIL" >&2
 
