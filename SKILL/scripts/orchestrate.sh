@@ -721,15 +721,21 @@ for sid in order:
   rm -f "$TMP"
   [ "$FAIL" -gt 0 ] && printf 'clean: %s delete(s) failed; check logs\n' "$FAIL" >&2
 
-  # Clean tabs.json: remove entries whose sessionID is in the deleted set
-  DELETED_IDS=$(printf '%s\n' "$TO_DELETE" | awk -F'|' '$1 ~ /^ses_/ {print $1}' | tr '\n' ' ')
+  # Clean tabs.json: remove entries whose sessionID was ACTUALLY deleted
+  # (use the ok lines from TMP, not the full TO_DELETE plan). This keeps
+  # tabs.json consistent with the live state: a session that failed to
+  # delete keeps its tab entry until the user retries or cleans manually.
+  DELETED_IDS=$(awk '$1 == "ok" {print $2}' "$TMP" 2>/dev/null; true | tr '\n' ' ')
   if [ -n "$DELETED_IDS" ]; then
     TABS_REMOVED=$(PROJ_DIR="$PROJ_DIR" DELETED_IDS="$DELETED_IDS" python3 -c '
 import json, os, fcntl, subprocess
 proj = os.environ["PROJ_DIR"]
 deleted = set(os.environ.get("DELETED_IDS","").split())
 if not deleted or "" in deleted: print(0); raise SystemExit
-proc = subprocess.run(["sh","-c",". ./SKILL/scripts/os/_common.sh >/dev/null 2>&1 && tabs_json_path"],
+# tabs_json_path via $SELF_DIR (DRY: no hardcoded ./SKILL/scripts/...).
+# $SELF_DIR is set by the parent orchestrate.sh as the absolute path of
+# SKILL/scripts, so this works regardless of where the skill lives.
+proc = subprocess.run(["sh","-c",'. "$0/scripts/os/_common.sh" >/dev/null 2>&1; tabs_json_path', os.environ.get("SELF_DIR","./SKILL/scripts")],
                      capture_output=True, text=True, cwd=proj)
 p = proc.stdout.strip()
 if not p or not p.startswith("/"): print(0); raise SystemExit
@@ -759,6 +765,7 @@ print(removed)
   fi
 
   printf 'clean: done (%s/%s session(s) deleted)\n' "$OK" "$N" >&2
+  [ "$FAIL" -gt 0 ] && return 1 || return 0
 }
 
 # dispatch: route a task to one or multiple workers based on complexity.
