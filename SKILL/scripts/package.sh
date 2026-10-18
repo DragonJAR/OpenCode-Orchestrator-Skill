@@ -85,18 +85,19 @@ mkdir -p "$PACKAGE_ROOT/references" "$PACKAGE_ROOT/scripts"
 trap 'rm -rf "$PACKAGE_WORK"' EXIT INT TERM
 
 EXPECTED_ENTRIES="$PACKAGE_WORK/expected-entries.txt"
-# Directory entries the recursive zip stores (comparison is order-independent: both sides sorted).
-printf '%s\n' "$PACKAGE_NAME/" "$PACKAGE_NAME/references/" "$PACKAGE_NAME/scripts/" > "$EXPECTED_ENTRIES"
+# Directory entries the recursive zip stores, DERIVED from the closed list itself
+# (single source of truth: a new subdir in PACKAGE_FILES updates this for free).
+{ printf '%s\n' "$PACKAGE_NAME/"
+  printf '%s\n' "$PACKAGE_FILES" | awk -F/ 'NF>1{d="";for(i=1;i<NF;i++){d=d (i>1?"/":"") $i; print d}}' | LC_ALL=C sort -u |
+    while IFS= read -r d; do printf '%s\n' "$PACKAGE_NAME/$d/"; done
+} > "$EXPECTED_ENTRIES"
 
 # Single pass over the closed list: check + copy + record the expected entry.
 printf '%s\n' "$PACKAGE_FILES" | awk 'NF{print}' | while IFS= read -r rel; do
   src="$SOURCE_ROOT/$rel"
   check_source_file "$src"
-  case "$rel" in
-    references/*) cp -p "$src" "$PACKAGE_ROOT/references/" ;;
-    scripts/*)    cp -p "$src" "$PACKAGE_ROOT/scripts/" ;;
-    *)            cp -p "$src" "$PACKAGE_ROOT/" ;;
-  esac
+  mkdir -p "$(dirname "$PACKAGE_ROOT/$rel")"
+  cp -p "$src" "$PACKAGE_ROOT/$rel"
   printf '%s\n' "$PACKAGE_NAME/$rel" >> "$EXPECTED_ENTRIES"
 done
 
