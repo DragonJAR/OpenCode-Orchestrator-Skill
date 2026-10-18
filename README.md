@@ -1,7 +1,7 @@
 # OpenCode Orchestrator Skill
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](SKILL/LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.1-green.svg)](SKILL/SKILL.md)
+[![Version](https://img.shields.io/badge/version-1.0.2-green.svg)](SKILL/SKILL.md)
 [![Platform](https://img.shields.io/badge/platform-OpenCode%20V2-8A2BE2.svg)](https://opencode.ai)
 [![Author](https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg)](https://www.DragonJAR.org)
 [![Español](https://img.shields.io/badge/read%20in-Espa%C3%B1ol-blue.svg)](README.es.md)
@@ -63,7 +63,7 @@ The skill and its validation suite are intentionally designed with **zero runtim
 Run the built-in structural validator from the repository root:
 
 ```bash
-bash .agents/maintenance/scripts/validate_skill.sh
+sh .agents/maintenance/scripts/validate_skill.sh
 ```
 
 Expected output:
@@ -71,10 +71,10 @@ Expected output:
 [OK]   SKILL.md existe y es UTF-8 legible
 [OK]   Frontmatter válido dentro del subconjunto YAML documentado; claves únicas
 [OK]   Campo name válido (opencode-orchestrator-skill)
-[OK]   Campo description decodificado presente y <= 1024 caracteres (679)
-[OK]   SKILL.md <= 5000 palabras (3161)
-[OK]   references/ existe con archivos Markdown (13)
-[OK]   Análisis Markdown completo: 44 enlaces inline encontrados (44 locales, 0 externos)
+[OK]   Campo description decodificado presente y <= 1024 caracteres (553)
+[OK]   SKILL.md <= 5000 palabras (4959)
+[OK]   references/ existe con archivos Markdown (15)
+[OK]   Análisis Markdown completo: 55 enlaces inline encontrados (55 locales, 0 externos)
 ----------------------------------------
 TOTAL: 7 passed, 0 failed
 ```

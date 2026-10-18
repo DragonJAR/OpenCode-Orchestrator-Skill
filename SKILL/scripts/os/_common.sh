@@ -43,7 +43,39 @@ json_get_field() {  # stdin=JSON, $1=KEY -> emits the value
 }
 
 # --- kv cache -------------------------------------------------------------------
-cache_put() { printf '%s\n' "$2" > "$CACHE_DIR/$1"; }
+cache_put() {  # KEY VALUE -> persists VALUE to CACHE_DIR/KEY; JSON secrets redacted first.
+  # Redacts apiKey / password / token (case-insensitive) recursively from any JSON
+  # value before writing. Non-JSON values pass through unchanged. Defense in depth
+  # for S1 (gap V1): even if a future caller routes an /api/model/default body
+  # through cache_put, the apiKey never lands in plaintext on disk. Falls back to
+  # the legacy plain-printf write when python3 is unavailable (cache consumers
+  # are unaffected; only the redaction is skipped). Contract: same signature,
+  # same exit codes.
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$2" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    obj = json.loads(raw)
+except Exception:
+    sys.stdout.write(raw)
+    sys.exit(0)
+SECRET = {"apikey", "password", "token"}
+def redact(v):
+    if isinstance(v, dict):
+        return {k: ("[REDACTED]" if str(k).lower() in SECRET else redact(val)) for k, val in v.items()}
+    if isinstance(v, list):
+        return [redact(x) for x in v]
+    return v
+out = json.dumps(redact(obj))
+if not out.endswith("\n"):
+    out += "\n"
+sys.stdout.write(out)
+' > "$CACHE_DIR/$1"
+  else
+    printf '%s\n' "$2" > "$CACHE_DIR/$1"
+  fi
+}
 cache_get() { if [ -f "$CACHE_DIR/$1" ]; then cat "$CACHE_DIR/$1"; else printf ''; fi; }
 cache_has() { [ -f "$CACHE_DIR/$1" ] && [ -s "$CACHE_DIR/$1" ]; }
 # auth_flag: Basic-auth flag for curl. It lives HERE, not in orchestrate.sh,

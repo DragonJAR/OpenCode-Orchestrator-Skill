@@ -15,6 +15,33 @@ All notable changes to this project are documented here. The format is based on
 - Documentation aligned with the live schema (2.0.29): PATCH session.update
   documented, stale version pins refreshed, session-id subcommand added to
   the table, parentID listed, broken cross-link repaired.
+- **Packaging closed list synced with the linked tree**: the recipe in
+  `.agents/maintenance/testing-and-iteration.md` shipped the two ledger
+  validators without their hard dependency `scripts/_validators.awk` (both
+  exit 2 with `ERROR: shared awk library missing`) and omitted
+  `references/naming-convention.md` and `references/triggers-es.md`, both
+  linked from `SKILL.md`. The distributed ZIP therefore carried
+  non-executable validators and 2 dead links. The closed list now ships
+  the awk library and the 2 references (inventory 20 -> 23).
+- preflight autentica `/openapi.json` (S2): el flag `-u opencode:<password>`
+  se construye correctamente pero se citaba en las invocaciones a `curl`,
+  lo que hacía que `curl` lo tratase como un único token con un espacio
+  interno y devolviese 401 contra un serve con auth. Se adopta la
+  convención ya documentada en `os/_common.sh` (`AUTH` sin citar).
+- `cache_put` redacta claves sensibles antes de persistir (S1): valores
+  `apiKey`, `password` y `token` (case-insensitive) se reemplazan por
+  `"[REDACTED]"` de forma recursiva en cualquier cuerpo JSON, manteniendo
+  la validez del JSON. Los valores no-JSON pasan intactos.
+- Consistencia documental publica: badge espanol sincronizado a 1.0.2 (D9) e invocacion del validator en README en `sh` para alinear con `#!/bin/sh` y la frontmatter (D8).
+- Snapshot del validator en el README espanol refrescado a la salida real (4959 palabras, 15 referencias) y secciones Fixed duplicadas consolidadas.
+- SF-B (D12, off-by-one documental): el bullet de C1 reportaba "inventory 19 -> 22" perpetuando el conteo erróneo de T2; arqueología git + C1-evidence confirman que la lista cerrada del ZIP pasó de **20 → 23** entradas (3 dirs + 20 archivos pre-C1; +_validators.awk + naming-convention.md + triggers-es.md = 23). Corrección mínima 1 palabra.
+- SF-A (D11, bug S2 latente): 6 invocaciones `curl "$AUTH"` en `watch_run.sh` (L37, L49) y `orchestrate.sh` (L201, L238, L250, L560) corregidas a `${AUTH:-}` — mismo patrón del fix C4 en preflight.sh; citado, el flag `-u opencode:<password>` llega a curl como un único token y la petición falla con 401 contra un serve con auth. Los 4 scripts afectados son `#!/bin/sh`.
+
+### Changed
+
+- Receta de empaquetado extraída a `SKILL/scripts/package.sh` (script
+  versionado, ejecutable, única fuente de verdad de la lista cerrada).
+  La lista crece a 24 entradas para incluir el propio script.
 
 ## [1.0.2] - 2026-10-14
 
