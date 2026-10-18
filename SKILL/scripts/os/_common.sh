@@ -28,7 +28,6 @@ mkdir -p "$CACHE_DIR" 2>/dev/null
 # quotes), curl sees -u followed by user:pass as two separate arguments
 # and authenticates correctly. Quoting re-breaks this path; the
 # corresponding SC2086 warning is a known false positive here.
-http_get() { curl -fsS -m 30 ${AUTH:-} "$1"; }
 http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json' -d "$2" "$1"; }
 
 # api_get_all_pages PATH -> emits concatenated JSON with merged `data` arrays.

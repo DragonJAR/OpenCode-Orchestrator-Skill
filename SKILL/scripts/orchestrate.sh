@@ -104,7 +104,6 @@ sub_create_worker() {
 
 sub_sessions() {
   require_state
-  AUTH=$(auth_flag)
   # Only newlines are stripped: SPACES are preserved. `tr -d ' '` did double
   # duty compacting and also destroyed the title ("[01] Vermithrax"
   # -> "[01]Vermithrax"), which is exactly what this view must show.
@@ -183,7 +182,6 @@ sub_wait_idle() {
   parse_kv "$@"
   [ -n "$SID" ] || { printf '%s\n' '--session required' >&2; exit 2; }
   require_state
-  AUTH=$(auth_flag)
   # Pool-safe: sessions are REUSED across tasks, so a time.idle inherited
   # from a previous run would cause this wait to return immediately with stale
   # values. send-prompt caches the dispatch timestamp per session; if it
@@ -230,7 +228,6 @@ sub_send_prompt() {
   [ -n "$SID" ] && [ -n "$PROMPT_FILE" ] || { printf '%s\n' '--session and --prompt-file required' >&2; exit 2; }
   require_state
   [ -f "$PROMPT_FILE" ] || die "prompt file does not exist: $PROMPT_FILE"
-  AUTH=$(auth_flag)
   # Guard against the silent failure: a session created without a resolved
   # model accepts the prompt, infers nothing (0 tokens) and ends in
   # outcome=failed with no visible error. Verified BEFORE sending, with the
@@ -845,23 +842,11 @@ sub_session_id() {
   [ -n "$PARTS" ] || die "session-id: invalid compact ref: $COMPACT (want NN, NNsMM, [NN], or [NN]s[MM])"
   set -- $PARTS
   PARENT="$1"; SUB="${2:-}"
-  require_state
-  AUTH=$(auth_flag 2>/dev/null || printf '')
+  # require_state deliberately removed: api_get_all_pages bypasses
+  # the preflight cache and works on its own. Keeping require_state would
+  # make this subcommand fail in the same 2.0.29 case the rest of the
+  # migration just fixed.
   RESP=$(api_get_all_pages /api/session) || die "session-id: /api/session failed"
-  printf '%s' "$RESP" | python3 -c "
-import json, sys, re
-d = sys.argv[1]
-pat = re.escape(sys.argv[2]) + r'(?:\\s|\\$)'
-data = json.loads(sys.stdin.read()).get('data', [])
-for s in data:
-    if s.get('location', {}).get('directory', '') != d:
-        continue
-    title = s.get('title', '')
-    if re.search(pat, title):
-        print(s.get('id', ''))
-        sys.exit(0)
-sys.exit(1)
-" "$PROJ_DIR" "\\[${PARENT}${SUB:+\\]s\\[}${SUB:-}\\]" >/dev/null 2>&1
   # Re-run with output capture (python3 inline output not reliable across all sh -> python stdin handling)
   RESULT=$(printf '%s' "$RESP" | python3 -c "
 import json, sys, re

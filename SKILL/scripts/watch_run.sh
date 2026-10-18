@@ -27,8 +27,6 @@ done
 [ -n "$SESSION" ] && [ -n "$ARTIFACTS" ] && [ -n "${OPENCODE_URL:-}" ] || {
   printf '%s\n' "ERROR: -s and -a required; OPENCODE_URL must come from preflight" >&2; exit 2; }
 command -v awk >/dev/null 2>&1 || { printf '%s\n' "ERROR: awk not available" >&2; exit 2; }
-AUTH=""
-[ -n "${OPENCODE_PW:-}" ] && AUTH="-u opencode:$OPENCODE_PW"
 START=$(date +%s)
 prev=""
 printf '%s\n' "watch_run: session=$SESSION deadline=${DEADLINE}s interval=${INTERVAL}s artifacts=$ARTIFACTS"
