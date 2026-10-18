@@ -31,6 +31,42 @@ mkdir -p "$CACHE_DIR" 2>/dev/null
 http_get() { curl -fsS -m 30 ${AUTH:-} "$1"; }
 http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json' -d "$2" "$1"; }
 
+# api_get_all_pages PATH -> emits concatenated JSON with merged `data` arrays.
+# Single source of truth for the opencode cursor pagination pattern (50/page
+# base64 cursor). Used by pool_list, sub_sessions and sub_session_id. Why here
+# (DRY): all three previously duplicated the same loop inline. Why not curl:
+# the opencode API requires auth via service.json, and that auth can be empty
+# when preflight cannot populate the cache (e.g. 2.0.29 /openapi.json returns
+# HTML); the opencode CLI resolves auth internally. Bypassing curl removes
+# the 401 surface for the whole 50+ subcommand set at once.
+api_get_all_pages() {
+  _p="$1" _cursor="" _first=1 _out="" _resp=""
+  while : ; do
+    if [ -n "$_cursor" ]; then _url="$_p?cursor=$_cursor"; else _url="$_p"; fi
+    _resp=$(opencode api GET "$_url" 2>/dev/null) || return $?
+    [ -z "$_resp" ] && return 3
+    if [ "$_first" = 1 ]; then _out="$_resp"; _first=0
+    else
+      _out=$(printf '%s\n%s\n' "$_out" "$_resp" | python3 -c '
+import json, sys
+try:
+  a = json.loads(sys.stdin.readline())
+  b = json.loads(sys.stdin.readline())
+  a["data"].extend(b.get("data", []))
+  if "cursor" not in a: a["cursor"] = b.get("cursor", {})
+  print(json.dumps(a))
+except Exception:
+  print(sys.stdin.read())
+' 2>/dev/null)
+    fi
+    _cursor=$(printf '%s' "$_resp" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(d.get("cursor",{}).get("next",""))' 2>/dev/null)
+    [ -z "$_cursor" ] && break
+  done
+  printf '%s' "$_out"
+}
+
 # --- json (jq-less; awk) --------------------------------------------------------
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
   awk 'BEGIN{ORS=""}{gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");gsub(/\r/,"\\r");if(NR>1)printf "\\n";printf "%s",$0}'
@@ -271,8 +307,9 @@ pool_list() {
   # workers (pool, dedup, init-run). Parses with python3 (already a
   # dependency for sub_dispatch's wait-idle prompt and verify-daughters);
   # portable, robust to bracket mismatches and the closure-quirks of nawk.
-  AUTH=$(auth_flag 2>/dev/null || printf '')
-  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || return 3
+  # Uses api_get_all_pages (DRY: same pagination as sub_sessions and
+  # sub_session_id) so >50 sessions do not silently miss dedup matches.
+  RESP=$(api_get_all_pages /api/session) || return 3
   [ -n "$RESP" ] || return 3
   # Columns: ordinal<TAB>name<TAB>state<TAB>slug<TAB>sid<TAB>out<TAB>parent
   # 7 columns; `d == d` filter for the project directory.

@@ -34,7 +34,7 @@ prev=""
 printf '%s\n' "watch_run: session=$SESSION deadline=${DEADLINE}s interval=${INTERVAL}s artifacts=$ARTIFACTS"
 while : ; do
   now=$(date +%s); [ $((now - START)) -ge "$DEADLINE" ] && { printf '%s\n' "watch_run: TIMEOUT"; exit 3; }
-  resp=$(curl -s -m 10 ${AUTH:-} "$OPENCODE_URL/api/session/$SESSION" 2>/dev/null || printf '')
+  resp=$(opencode api GET "/api/session/$SESSION" 2>/dev/null || printf '')
   idle=$(printf '%s' "$resp" | awk 'match($0,/"idle":[0-9]+/){print substr($0,RSTART+7,RLENGTH-7); exit}')
   outcome=$(printf '%s' "$resp" | awk -F'"outcome":"' 'NF>1{split($2,a,"\""); print a[1]; exit}')
   nart=0; oldIFS=$IFS; IFS=,
@@ -46,7 +46,7 @@ while : ; do
   # the bare $OPENCODE_PW here aborted the whole watcher with "unbound variable"
   # under set -u on no-auth instances (line 24 already used the :- form).
   if [ -n "${OPENCODE_PW:-}" ]; then
-    plist=$(curl -s -m 10 ${AUTH:-} "$OPENCODE_URL/api/session/$SESSION/permission" 2>/dev/null | tr -d ' \n' | awk 'match($0,/"data":\[[^]]*\]/){print substr($0,RSTART+8,RLENGTH-9); exit}')
+    plist=$(opencode api GET "/api/session/$SESSION/permission" 2>/dev/null | tr -d ' \n' | awk 'match($0,/"data":\[[^]]*\]/){print substr($0,RSTART+8,RLENGTH-9); exit}')
     [ -n "$plist" ] && warn="awaiting-approval"
   fi
   cur="idle=${idle:-no} outcome=${outcome:-none} artifacts=$nart/$total $warn"

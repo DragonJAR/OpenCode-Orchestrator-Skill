@@ -110,7 +110,7 @@ sub_sessions() {
   # -> "[01]Vermithrax"), which is exactly what this view must show.
   # The fetch stays outside the pipeline: with curl down, the pipe's rc was
   # awk's and an empty inventory read as "no sessions".
-  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || die "GET /api/session failed; cannot list the inventory"
+  RESP=$(api_get_all_pages /api/session) || die "GET /api/session failed; cannot list the inventory"
   [ -n "$RESP" ] || die "GET /api/session returned an empty response"
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$PROJ_DIR" \
@@ -198,7 +198,7 @@ sub_wait_idle() {
   while : ; do
     now=$(date +%s)
     [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
-    R=$(curl -fsS -m 10 ${AUTH:-} "$(cache_get endpoint)/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
+    R=$(opencode api GET "/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
     IDLE=$(printf '%s' "$R" | awk 'match($0,/"idle":[0-9]+/){print substr($0,RSTART+7,RLENGTH-7); exit}')
     UPD=$(printf '%s' "$R" | awk 'match($0,/"updated":[0-9]+/){print substr($0,RSTART+11,RLENGTH-12); exit}')
     if [ -n "$SINCE" ]; then
@@ -235,7 +235,7 @@ sub_send_prompt() {
   # model accepts the prompt, infers nothing (0 tokens) and ends in
   # outcome=failed with no visible error. Verified BEFORE sending, with the
   # reason stated.
-  SINFO=$(curl -fsS -m 15 ${AUTH:-} "$(cache_get endpoint)/api/session/$SID" 2>/dev/null)
+  SINFO=$(opencode api GET "/api/session/$SID" 2>/dev/null)
   SESS_M=$(printf '%s' "$SINFO" | tr -d '\n' | sed 's/.*"model":{"id":"\([^"]*\)".*/\1/')
   if [ -z "$SESS_M" ] || [ "$SESS_M" = "$SINFO" ]; then
     printf 'ERROR: session %s has no resolved model (empty model.id).\n' "$SID" >&2
@@ -247,8 +247,7 @@ sub_send_prompt() {
   # An empty prompt used to be dispatched with prompt=ok: workers running with
   # no instructions and no error signal. Fail-closed.
   [ -n "$TEXT" ] || die "prompt file empty or unreadable: $PROMPT_FILE"
-  R=$(curl -fsS -m 60 ${AUTH:-} -H 'Content-Type: application/json' \
-    -d '{"text":"'"$TEXT"'"}' "$(cache_get endpoint)/api/session/$SID/prompt") \
+  R=$(opencode api POST "/api/session/$SID/prompt" -d '{"text":"'"$TEXT"'"}' 2>/dev/null) \
     || die 'POST /api/session/{id}/prompt failed'
   MID=$(printf '%s' "$R" | awk 'match($0,/"infoID":"[^"]+/){print substr($0,RSTART+10,RLENGTH-10); exit}')
   # Cachea el timestamp de despacho: wait-idle de esta sesion solo acepta un
@@ -556,8 +555,7 @@ except Exception:
       [ "$ans" = "yes" ] || { printf 'aborted\n' >&2; exit 2; }
     fi
   fi
-  AUTH=$(auth_flag)
-  curl -fsS -m 30 ${AUTH:-} -X DELETE "$(cache_get endpoint)/api/session/$SID" \
+  opencode api DELETE "/api/session/$SID" >/dev/null 2>&1 \
     || die "DELETE /api/session/$SID failed"
   printf 'deleted=%s children_was=%s\n' "$SID" "$CHILDREN"
 }
@@ -849,7 +847,7 @@ sub_session_id() {
   PARENT="$1"; SUB="${2:-}"
   require_state
   AUTH=$(auth_flag 2>/dev/null || printf '')
-  RESP=$(http_get "$(cache_get endpoint)/api/session" 2>/dev/null) || die "session-id: /api/session failed"
+  RESP=$(api_get_all_pages /api/session) || die "session-id: /api/session failed"
   printf '%s' "$RESP" | python3 -c "
 import json, sys, re
 d = sys.argv[1]
