@@ -23,25 +23,78 @@ All notable changes to this project are documented here. The format is based on
   linked from `SKILL.md`. The distributed ZIP therefore carried
   non-executable validators and 2 dead links. The closed list now ships
   the awk library and the 2 references (inventory 20 -> 23).
-- preflight autentica `/openapi.json` (S2): el flag `-u opencode:<password>`
-  se construye correctamente pero se citaba en las invocaciones a `curl`,
-  lo que hacía que `curl` lo tratase como un único token con un espacio
-  interno y devolviese 401 contra un serve con auth. Se adopta la
-  convención ya documentada en `os/_common.sh` (`AUTH` sin citar).
-- `cache_put` redacta claves sensibles antes de persistir (S1): valores
-  `apiKey`, `password` y `token` (case-insensitive) se reemplazan por
-  `"[REDACTED]"` de forma recursiva en cualquier cuerpo JSON, manteniendo
-  la validez del JSON. Los valores no-JSON pasan intactos.
-- Consistencia documental publica: badge espanol sincronizado a 1.0.2 (D9) e invocacion del validator en README en `sh` para alinear con `#!/bin/sh` y la frontmatter (D8).
-- Snapshot del validator en el README espanol refrescado a la salida real (4959 palabras, 15 referencias) y secciones Fixed duplicadas consolidadas.
-- SF-B (D12, off-by-one documental): el bullet de C1 reportaba "inventory 19 -> 22" perpetuando el conteo erróneo de T2; arqueología git + C1-evidence confirman que la lista cerrada del ZIP pasó de **20 → 23** entradas (3 dirs + 20 archivos pre-C1; +_validators.awk + naming-convention.md + triggers-es.md = 23). Corrección mínima 1 palabra.
-- SF-A (D11, bug S2 latente): 6 invocaciones `curl "$AUTH"` en `watch_run.sh` (L37, L49) y `orchestrate.sh` (L201, L238, L250, L560) corregidas a `${AUTH:-}` — mismo patrón del fix C4 en preflight.sh; citado, el flag `-u opencode:<password>` llega a curl como un único token y la petición falla con 401 contra un serve con auth. Los 4 scripts afectados son `#!/bin/sh`.
+- preflight authenticates `/openapi.json` (S2): the `-u opencode:<password>` flag was
+  being built correctly but quoted in the curl invocations, which made
+  curl treat it as a single token with an embedded space and return 401
+  against an auth-required server. Adopted the convention already
+  documented in `os/_common.sh` (unquoted `AUTH`).
+- `cache_put` redacts sensitive values before persisting (S1): `apiKey`,
+  `password` and `token` values (case-insensitive) are recursively
+  replaced with `"[REDACTED]"` in any JSON body, keeping the JSON valid.
+  Non-JSON values pass through unchanged.
+- Public documentation consistency: Spanish badge synced to 1.0.2 (D9)
+  and validator invocation in README uses `sh` to align with `#!/bin/sh`
+  and the frontmatter (D8).
+- Spanish README validator snapshot refreshed to the actual output
+  (4959 words, 15 references) and duplicated Fixed sections consolidated.
+- SF-B (D12, documentation off-by-one): the C1 bullet reported
+  "inventory 19 -> 22" perpetuating the wrong T2 count; git archaeology
+  + C1-evidence confirm the closed ZIP list went from **20 → 23**
+  entries (3 dirs + 20 pre-C1 files; +`_validators.awk` +
+  `naming-convention.md` + `triggers-es.md` = 23). Minimal 1-word fix.
+- SF-A (D11, latent S2 bug): 6 `curl "$AUTH"` invocations in `watch_run.sh`
+  (L37, L49) and `orchestrate.sh` (L201, L238, L250, L560) corrected to
+  `${AUTH:-}` — same pattern as the C4 fix in preflight.sh; when quoted,
+  the `-u opencode:<password>` flag arrives at curl as a single token
+  and the request fails with 401 against a serve with auth. The 4
+  affected scripts are `#!/bin/sh`.
+- V3-A (S1 residue, chmod 600 fail-closed): the `chmod 600` on the
+  preflight `auth_password` cache was best-effort (`2>/dev/null || :`);
+  on filesystems without POSIX permissions (FAT/9P/drvfs) the file
+  stayed with the password in plaintext and default perms. Now
+  fail-closed: if `chmod 600` fails, the file is removed and preflight
+  aborts with exit 1 and the cause to stderr.
+- V3-A (gate pin validated before the call): `OPENCODE_TUI_PINNED_VERSION`
+  with minor/patch (e.g. `2.0.32`) made `tui-detect.sh` exit 2 and the
+  `2>/dev/null` in `resolve_gate` and `sub_tabs` turned that into an
+  empty gate that silently fell back to the cache (possibly stale). The
+  pin is now validated with a `case *.*` BEFORE invoking the detector
+  (2 sites), same fail-closed criterion as the detector itself.
+- V3-B (24 → 42, post-1.0.2 packaging restructure): the 3 commits
+  `3a0d075` (ship-ready packaging) and `7f4896b` (DRY in
+  `EXPECTED_DIRS`) consolidated the recipe into `SKILL/scripts/package.sh`
+  with `PACKAGE_FILES` as the single source of truth. The ZIP went from
+  24 → **42** entries (37 files + 4 unique dirs — `references/`,
+  `scripts/`, `scripts/os/`, `scripts/prompt-templates/` — + 1 root dir).
+  The C3 bullet ("grows to 24") is kept as a historical record of its
+  effect; this bullet documents the subsequent evolution not reflected
+  in [Unreleased].
+- V3-ORTHO (package.sh perms 711→755): the packaging script had
+  `-rwx--x--x` (711) perms inherited from the source file, unreadable
+  for group/other in the distributed package; the skill convention is
+  755 (all other scripts in the package are). 1-bit fix (chmod 755),
+  verified by re-packaging: the ZIP now ships package.sh readable and
+  executable; preflight smoke-test from the extracted package exit 0.
+- V3-C (validator accepts optional `[DIR]`): `validate_skill.sh`
+  silently ignored positional arguments and always validated the
+  canonical skill in the repo; now accepts an optional `[DIR]`
+  (`ROOT` override with `CDPATH= cd -- "$1"`) to validate copies or
+  stubs in isolation, consistent with `orchestrate.sh`/`preflight.sh`/
+  `watch_run.sh`. Without an argument the behavior is identical; with
+  a non-existent directory it aborts fail-fast (exit 1 and `cd` error
+  message) instead of silently ignoring.
+- V3-C (G1, Keep-a-Changelog compare links): added the 4 link
+  definitions at the bottom of the file (`[Unreleased]` to
+  `v1.0.2...HEAD` and the compares of `[1.0.2]`, `[1.0.1]` and the release
+  tag of `[1.0.0]`) using the actual remote owner
+  (`DragonJAR/OpenCode-Orchestrator-Skill`), completing the
+  Keep-a-Changelog convention of the changelog.
 
 ### Changed
 
-- Receta de empaquetado extraída a `SKILL/scripts/package.sh` (script
-  versionado, ejecutable, única fuente de verdad de la lista cerrada).
-  La lista crece a 24 entradas para incluir el propio script.
+- Packaging recipe extracted to `SKILL/scripts/package.sh` (versioned,
+  executable script, single source of truth for the closed list). The
+  list grows to 24 entries to include the script itself.
 
 ## [1.0.2] - 2026-10-14
 
@@ -238,3 +291,7 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/releases/tag/v1.0.0

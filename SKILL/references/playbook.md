@@ -72,7 +72,7 @@ Use `create-worker` step by step only when you truly need it: creating a single 
 
 Cross-check `init-run` against the ledger: the `sessionID`s it emits are the real identity. Dedup is **by name, ignoring the ordinal**, so `--worker "Vermithrax"` reuses `[01] Vermithrax` instead of creating a duplicate.
 
-If `init-run` answers `init-run: INCOMPLETO` and exits with code 1, some worker was not created: **do not treat it as success**. Re-run `init-run` with the same titles; dedup reuses what already exists and completes what is missing.
+If `init-run` answers `init-run: INCOMPLETE` and exits with code 1, some worker was not created: **do not treat it as success**. Re-run `init-run` with the same titles; dedup reuses what already exists and completes what is missing.
 
 For each worker, in this order:
 

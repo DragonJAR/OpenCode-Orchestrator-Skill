@@ -266,6 +266,9 @@ resolve_gate() {
   # "2.0.22" was passed and the detector rejected it with exit 2; the
   # 2>/dev/null turned that into an empty gate that read as "no-preflight".
   WANT_PIN="${OPENCODE_TUI_PINNED_VERSION:-2}"
+  case "$WANT_PIN" in
+    *.*) die "OPENCODE_TUI_PINNED_VERSION must be the major branch (e.g. 2), not $WANT_PIN" ;;
+  esac
   PROBE=$(sh "$SELF_DIR/os/tui-detect.sh" "$PROJ_DIR" "$WANT_PIN" 2>/dev/null)
   if [ -n "$PROBE" ]; then
     GATE=$(printf '%s\n' "$PROBE" | sed -n 's/^gate=//p')
@@ -454,6 +457,9 @@ sub_tabs() {
   # tabs?" before creating anything. If an explicit --tui-cwd is given, it is
   # checked against the real detected cwd.
   TUI_CWD=""; parse_kv "$@"
+  case "${OPENCODE_TUI_PINNED_VERSION:-2}" in
+    *.*) die "OPENCODE_TUI_PINNED_VERSION must be the major branch (e.g. 2), not ${OPENCODE_TUI_PINNED_VERSION:-2}" ;;
+  esac
   _probe=$(sh "$SELF_DIR/os/tui-detect.sh" "$PROJ_DIR" "${OPENCODE_TUI_PINNED_VERSION:-2}" 2>/dev/null)
   printf '%s\n' "$_probe"
   if [ -n "$TUI_CWD" ]; then

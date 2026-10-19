@@ -137,7 +137,8 @@ if [ -n "${ORCHESTRATE_CACHE_DIR:-}" ]; then
   case "$P" in ""|none) : ;; *) printf '%s\n' "${P%%,*}" > "$ORCHESTRATE_CACHE_DIR/default_agent" ;; esac
   if [ -n "$PW" ]; then
     printf '%s\n' "$PW" > "$ORCHESTRATE_CACHE_DIR/auth_password"
-    chmod 600 "$ORCHESTRATE_CACHE_DIR/auth_password" 2>/dev/null || :
+    chmod 600 "$ORCHESTRATE_CACHE_DIR/auth_password" 2>/dev/null \
+      || { rm -f "$ORCHESTRATE_CACHE_DIR/auth_password"; printf 'ERROR: cannot chmod 600 auth_password (filesystem may not support POSIX perms); cache cleared for safety\n' >&2; exit 1; }
   fi
   # Caches the tabs gate: init-run reads it and decides without asking for --tui-cwd.
   if [ -f "$TUI_DETECT" ]; then

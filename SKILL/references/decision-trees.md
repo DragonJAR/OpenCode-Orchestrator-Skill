@@ -35,7 +35,7 @@ How do I pass the worker list?
     └── Without a number and want it auto-numbered?
           └── YES → `worker_list` assigns `01, 02, 03...` in entry order.
 
-Dedup compares by **name ignoring the ordinal**, so `--worker "Vermithrax"` reuses `[01] Vermithrax` instead of creating a duplicate. If `init-run` responds `INCOMPLETO` and exits 1, some worker was not created: rerun with the same titles and dedup completes what was missing. [Nomenclature](naming-convention.md)
+Dedup compares by **name ignoring the ordinal**, so `--worker "Vermithrax"` reuses `[01] Vermithrax` instead of creating a duplicate. If `init-run` responds `INCOMPLETE` and exits 1, some worker was not created: rerun with the same titles and dedup completes what was missing. [Nomenclature](naming-convention.md)
 
 ## Tree 2 — Can the root worker be started with verifiable identity?
 

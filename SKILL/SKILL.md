@@ -1,6 +1,6 @@
 ---
 name: opencode-orchestrator-skill
-description: "Orchestrate multi-agent work in OpenCode V2 in two levels: the orchestrator creates worker sessions, each worker coordinates at least two subagents, integrates results and reports, with a YAML ledger and validators. Use when the user asks to 'orchestrate OpenCode sessions', 'spawn workers/subagents', 'multi-agent run' or 'manage OpenCode sessions'. Not for single-agent tasks, explaining agents in general, other runtimes (Claude Code, Codex, CI) or data pipelines. For the Spanish-language version of this trigger list, see references/triggers-es.md."
+description: "Orchestrate multi-agent work in OpenCode V2 in two levels: the orchestrator creates worker sessions, each worker coordinates at least two subagents, integrates results and reports, with a YAML ledger and validators. Use when the user asks to 'orchestrate OpenCode sessions', 'spawn workers/subagents', 'multi-agent run' or 'manage OpenCode sessions'. Not for single-agent tasks, explaining agents in general, other runtimes (Claude Code, Codex, CI) or data pipelines. For the Spanish-language version of this trigger list, see references/triggers-es.md. The skill body, references, scripts and CHANGELOG are in English; the assistant should respond in the language the user is currently speaking."
 license: MIT
 compatibility: "Operating OpenCode V2 requires authorized access to an instance; without access, limit the work to planning. Validators: POSIX sh + awk, scripts with LF line endings (Windows: Git Bash or WSL)."
 metadata:
