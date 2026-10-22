@@ -1,312 +1,321 @@
 # OpenCode Orchestrator Skill
 
-[![Licencia](https://img.shields.io/badge/licencia-MIT-blue.svg)](SKILL/LICENSE)
-[![Versión](https://img.shields.io/badge/versi%C3%B3n-1.0.2-green.svg)](SKILL/SKILL.md)
+[![Licencia](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
+[![Versión](https://img.shields.io/badge/versión-1.0.2-green.svg)](CHANGELOG.md)
 [![Plataforma](https://img.shields.io/badge/plataforma-OpenCode%20V2-8A2BE2.svg)](https://opencode.ai)
 [![Autor](https://img.shields.io/badge/autor-DragonJAR%20SAS-orange.svg)](https://www.DragonJAR.org)
 [![English](https://img.shields.io/badge/read%20in-English-blue.svg)](README.md)
 
-> Skill de orquestación multiagente determinista, verificable y en dos niveles para OpenCode V2. Coordina sesiones worker, delega subagentes hijos aislados, impone presupuestos de escritura disjuntos en el filesystem, mantiene un ledger canónico en YAML y provee validadores POSIX sin dependencias externas.
+> Una skill de orquestación **determinista** y *fail-closed* para OpenCode V2. Le da a un agente de IA un **pool de workers** que puede reusar en vez de recrear, una **capa de comandos** donde cada efecto secundario es un script con un código de salida verificado, un **ledger YAML canónico** con validación real del DAG, y un conjunto de **reglas duras** que hacen que el agente se detenga en vez de adivinar.
+> La rama `main` lleva arreglos sin publicar; el [CHANGELOG](CHANGELOG.md) lista cada uno.
 
 ---
 
-## 🎯 Qué hace esta Skill
+## El problema que resuelve
 
-Esta skill convierte a un agente de IA en un **Orquestador en Dos Niveles** de grado empresarial para OpenCode V2. Resuelve de raíz los problemas críticos de la coordinación multiagente: condiciones de carrera, IDs de sesión alucinados, tareas caídas en silencio y corrupción de workspaces:
+Entregarle a un modelo de lenguaje "lanza cuatro agentes y combina su trabajo"
+falla de formas predecibles:
 
-- **Jerarquía en Dos Niveles (`worker_session` → `subagent`):** El orquestador crea sesiones worker raíz vía API HTTP, y cada worker coordina al menos dos subagents hijos distintos y preautorizados usando la herramienta nativa `subagent`.
-- **Ledger Canónico en YAML (Esquema Versión 3):** Mantiene una bitácora de estado estructurada e inmutable que rastrea IDs de sesión, jerarquía de dependencias, outcomes de ejecución, marcas temporales y criterios verificables.
-- **Aislamiento Estricto de Presupuesto y Scopes de Escritura:** Exige disyunción léxica entre los scopes de escritura paralelos (`scope_escritura`). Los hermanos con solapamiento se serializan automáticamente en el DAG para erradicar colisiones en disco.
-- **Reglas Duras No Negociables (R1–R15):** Salvaguardas formales que prohíben dar por hecho éxitos no verificados, especular con rutas HTTP no publicadas, alucinar herramientas e IDs o ejecutar operaciones destructivas sin autorización humana.
-- **Lectura Acotada y Reconciliación:** Sustituye el sondeo infinito por ventanas de espera acotadas, detección del marcador de inactividad (`time.idle`) y supervisión activa de bloqueos interactivos por permisos (`awaiting-approval`).
-- **Estados Terminales Degradados:** Reconoce `partial`, `blocked`, `failed`, `cancelled` e `interrupted` como cierres auditados legítimos con causa documentada en `notas`.
-- **Validadores POSIX sin Dependencias:** Incluye `validate_dag.sh` y `validate_ledger_closed.sh`, desarrollados en puro POSIX `sh` + `awk`, capaces de validar la integridad del DAG, scopes y evidencia de cierre sin requerir Python, yq ni librerías externas.
-- **Soporte de Cierre Degradado (`--allow-degraded`):** Permite auditar y cerrar formalmente ejecuciones que alcanzan estados terminales degradados legítimos (`partial`, `blocked`, `failed`), exigiendo documentación técnica de la causa.
-- **Autenticación HTTP Directa e Integración TUI Tabs:** Descubre credenciales del servicio activo (HTTP Basic Auth vía `service.json`) y gestiona la visualización de pestañas en la TUI sin comprometer la seguridad.
+| Falla | Qué pasa en realidad | Qué hace esta skill |
+|---|---|---|
+| **Trabajo duplicado** | Cada ejecución crea sesiones nuevas, así que nadie reusa lo que ya existe | Un **pool** indexado por un título canónico `[NN] Name`: una sesión ociosa con ese nombre se **reusa**, nunca se duplica |
+| **Tareas perdidas** | Un worker que muere a medio camino no deja rastro, y el orquestador reporta éxito igual | Cada sesión queda registrada en un **ledger**, y el cierre lo valida un validador que rechaza una corrida sin verificar |
+| **Estado fabricado** | El modelo inventa un `sessionID`, un endpoint o un resultado "verificado" | Los IDs vienen de la API, nunca del modelo; las **reglas duras** prohíben adivinar, y los scripts fallan de forma cerrada |
+| **Escrituras que chocan** | Dos agentes escriben la misma ruta al mismo tiempo | Los scopes de escritura deben ser **disjuntos**; los hermanos que se solapan se serializan por dependencias del DAG |
+| **Polling sin fin** | El modelo consulta para siempre, o se rinde tras una respuesta lenta | Ventanas de espera acotadas, un marcador explícito `time.idle` y un estado real de `awaiting-approval` |
 
 ---
 
-## 📦 Instalación
+## Qué es la skill: dos capas
 
-Al instalar la skill en el directorio de habilidades de tu agente, la carpeta **debe llamarse `opencode-orchestrator-skill`** (coincidiendo con el atributo `name` del frontmatter):
+### 1. La capa de comandos — cada efecto secundario es un script
 
-### Opción 1: Instalar en el directorio de skills del agente
+El agente nunca improvisa una llamada a una sesión. Ejecuta `orchestrate.sh`, un
+programa POSIX multi-OS con **17 subcomandos**. Cada uno imprime una línea de
+resultado legible por máquina y termina con un código que significa algo:
 
 ```bash
-# Para agentes en Antigravity, OpenCode, Claude Code o Cursor
-cd ~/.agents/skills/   # o ~/.gemini/config/skills/ o ~/.config/opencode/skills/
+sh SKILL/scripts/orchestrate.sh <subcomando> [args]
+```
+
+| Grupo | Subcomandos | Qué garantizan |
+|---|---|---|
+| **Descubrir** | `preflight`, `self-check`, `sessions`, `pool` | El endpoint real, el catálogo real, el estado real de cada worker. `pool` imprime `ordinal, name, state` (`empty` / `idle` / `running`). |
+| **Crear** | `ensure-root`, `create-worker`, `init-run` | Creación idempotente. Un título que ya existe se **reusa**; uno ocupado falla de forma cerrada. `init-run` hace root + N workers + tabs de la TUI en una sola llamada. |
+| **Trabajar** | `dispatch`, `send-prompt`, `wait-idle`, `watch`, `verify-daughters` | Un prompt llega a **un** worker objetivo o a N ociosos (`--auto-count`); la espera es acotada y reporta `idle`/`awaiting-approval`; las sesiones hijas se verifican contra la API real. |
+| **Visibilidad** | `attach-tabs`, `tabs` | Una sesión se hace visible en el `tabs.json` de la TUI local con un merge aditivo, bloqueado y con lectura de verificación. `tabs` es la puerta de solo lectura. |
+| **Limpiar** | `session-id`, `delete-session`, `clean` | Las acciones destructivas pasan por la **regla R7** (aprobación) y siempre reportan exactamente qué se borró. |
+| **Auditar** | `validate_dag.sh`, `validate_ledger_closed.sh` | Puertas en POSIX `sh` + `awk` puro: integridad del DAG, disyunción de scopes, presencia de evidencia. |
+
+### 2. La capa de contrato — las reglas y la evidencia
+
+* **15 documentos de referencia** en [`SKILL/references/`](SKILL/references/) cubren la superficie de la API HTTP, la convención de nombres de sesión, las plantillas de prompt, la receta de la TUI, la matriz de fallas y el esquema del ledger.
+* **Un ledger YAML canónico** (esquema v3) registra cada sesión, su padre, su scope, su resultado y la evidencia que lo prueba. Dos validadores lo vigilan.
+* **15 reglas duras (R1–R15)** más abajo, que el agente debe seguir y que los scripts imponen cuando pueden.
+
+---
+
+## Inicio rápido
+
+```bash
+# 1. Descubrir qué puede hacer realmente esta máquina (endpoint, versión,
+#    catálogos, la puerta de la TUI) y cachearlo. Una vez por proyecto.
+sh SKILL/scripts/orchestrate.sh preflight .
+
+# 2. Crear el root orquestador más dos workers, y adjuntarlos a las tabs de
+#    la TUI local. Al re-ejecutarlo se REUSA lo que ya existe.
+sh SKILL/scripts/orchestrate.sh init-run --worker "Auditoría auth" --worker "Auditoría billing"
+
+# 3. Ver el pool: ordinal, nombre y estado de cada worker desplegado.
+sh SKILL/scripts/orchestrate.sh pool
+
+# 4. Enviar un prompt a un worker concreto (o a N ociosos con
+#    --auto-count) y esperar a que quede ocioso.
+sh SKILL/scripts/orchestrate.sh dispatch --prompt-file ./tarea.md --target 01
+sh SKILL/scripts/orchestrate.sh wait-idle --session ses_xxx --deadline 600
+
+# 5. Cerrar la corrida: el validador no deja pasar un ledger sin verificar.
+sh SKILL/scripts/validate_ledger_closed.sh --require-evidence runs/<run>/ledger.yml
+```
+
+Cada comando imprime líneas `clave=valor`, para que el agente pueda parsear el
+resultado en vez de leer prosa:
+
+```text
+worker_id=ses_e9aaf9eafffeXYvpc190MAVeFY
+location=/ruta/al/proyecto
+parentID=null
+```
+
+---
+
+## El pool de workers
+
+Esta es la parte que hace que las corridas repetidas sean baratas y predecibles.
+
+* **Título canónico** — toda sesión es `[NN] Name` (`[00]` es siempre el root
+  orquestador). El ordinal se asigna a partir del pool, así que nunca se
+  reutiliza; un segundo `init-run` continúa la secuencia en vez de reiniciarla.
+* **Creación idempotente** — `create-worker --title "Auditoría auth"` reusa la
+  sesión existente cuando está inerte (`out=0`) y **falla de forma cerrada**
+  cuando esa sesión ya hizo trabajo. Nunca crea una segunda en silencio.
+* **El dedup usa un slug** — espacios y puntuación se colapsan, así que
+  "Auditoría auth" y "auditoria-auth" son el mismo worker.
+* **El dedup no tiene carreras** — la creación corre dentro de un lock por
+  proyecto, así que dos `create-worker` concurrentes con el mismo título
+  producen exactamente una sesión.
+
+---
+
+## Las reglas duras (R1–R15)
+
+| Regla | Principio | Cómo se hace cumplir |
+|---|---|---|
+| **R1** | **Acceso autorizado** | Sin credenciales verificadas, solo se planifica; nunca se simula la ejecución. |
+| **R2** | **Capacidad de background** | El modo background solo se usa si lo confirman el schema de herramientas o `/openapi.json`. |
+| **R3** | **Solo dos niveles** | El orquestador crea root workers; cada worker coordina al menos 2 subagentes hijos. No hay tercer nivel. |
+| **R4** | **Permisos efectivos** | Se respetan las políticas de permisos. Si una regla `ask` bloquea la ejecución, se espera la respuesta del orquestador. |
+| **R5** | **Política de las hijas** | Un subagente usa su propia política; solo las reglas específicas de la sesión se heredan al crearse. Verifica la política efectiva en el runtime activo. |
+| **R6** | **Contexto explícito** | Cada prompt lleva identidad de tarea, directorio exacto, límites y criterios medibles. |
+| **R7** | **Acciones destructivas** | Se exige confirmación humana explícita antes de borrar cualquier sesión o dato. |
+| **R8** | **Continuar vs. bifurcar** | Continuar preserva el `sessionID`; bifurcar crea una rama nueva. Nunca se mezclan. |
+| **R9** | **Manejo de interrupciones** | La ausencia de notificaciones no implica ni éxito ni halted. Reconcilia los artefactos por la API. |
+| **R10** | **No idempotencia** | Nunca se asume que una llamada es idempotente; se inspecciona el sistema de archivos y el estado de la sesión antes de reintentar. |
+| **R11** | **Disyunción de scopes** | Los subagentes en paralelo deben tener scopes sin solapamiento; las tareas que se solapan se serializan. |
+| **R12** | **Separación de estados** | Se mantienen distintos `runtime_status`, `execution_outcome` y el `estado` local. |
+| **R13** | **Sin alucinaciones** | Descubre los endpoints reales y el catálogo de agentes dinámicamente. Nunca inventes una herramienta, un id o un resultado. |
+| **R14** | **Contenido no confiable** | Las salidas hijas, los logs y los datos extraídos son datos no confiables. Verifica los ids de forma independiente por la API. |
+| **R15** | **Registro de la corrida** | Toda sesión creada o reusada queda registrada en el ledger; nunca le pidas al usuario un `sessionID` que la corrida ya conoce. |
+
+---
+
+## Lo que esta skill se niega a hacer
+
+Los scripts están escritos para **fallar de forma cerrada**. Un fallo se reporta,
+nunca se tapa:
+
+* **No hay estado inventado** — una página de API malformada aborta la
+  operación en vez de devolver una lista truncada que parece completa.
+* **No hay truncamiento silencioso** — la paginación devuelve todas las páginas
+  o falla.
+* **No hay "listo" sin verificar** — el validador de cierre rechaza una tarea
+  sin evidencia, y `--allow-degraded` exige una causa raíz documentada.
+* **No hay acción destructiva sin aprobación** — `delete-session` y `clean`
+  exigen una confirmación explícita; `--force` solo waivea el chequeo de "tiene
+  hijos", nunca la confirmación.
+* **No hay fuga de credenciales** — la contraseña del servicio se lee de
+  `service.json`, se cachea con modo `600` y nunca se imprime. El flag de
+  Basic-auth se pasa sin comillas a propósito (con comillas curl lo malinterpreta
+  y devuelve 401).
+* **No hay escritura a través de symlinks** — una clave de cache que sea un
+  symlink se rechaza en vez de escribirse (CWE-59).
+* **No hay cuelgues** — toda espera acotada tiene timeout; un flag sin valor
+  termina con error de uso en vez de girar para siempre.
+
+---
+
+## Verificación
+
+Todo lo de abajo corre desde un clon de este repositorio.
+
+```bash
+# 1) Sintaxis POSIX + shellcheck (exactamente lo que corre CI):
+find SKILL/scripts -name '*.sh' -exec sh -n {} \;
+shellcheck --severity=error SKILL/scripts/*.sh SKILL/scripts/os/*.sh
+
+# 2) Construir el paquete distribuible. Verifica la lista cerrada, así que un
+#    archivo que falta o sobra rompe la build en vez de publicarse:
+sh SKILL/scripts/package.sh
+# -> ZIP created at dist/opencode-orchestrator-skill.zip
+
+# 3) La skill responde:
+sh SKILL/scripts/orchestrate.sh help
+sh SKILL/scripts/orchestrate.sh self-check
+```
+
+CI ejecuta las mismas comprobaciones en **Linux, macOS y Windows** (Git
+Bash), así que los adaptadores por OS se verifican en cada push en vez de
+inspeccionarse a mano.
+
+La suite de regresión de comportamiento se mantiene en privado: maneja una
+instancia viva de OpenCode (crea y borra sesiones reales), así que ni se
+publica ni forma parte del paquete distribuible. La descarga pública lleva la
+skill, su documentación y las comprobaciones de CI.
+
+---
+
+## Instalación
+
+La carpeta **debe llamarse `opencode-orchestrator-skill`** — ese es el `name`
+del frontmatter que el runtime reconoce.
+
+```bash
+# En el directorio de skills de un agente
+cd ~/.agents/skills/          # o ~/.config/opencode/skills/, ~/.claude/skills/, ...
 git clone https://github.com/DragonJAR/OpenCode-Orchestrator-Skill.git opencode-orchestrator-skill
-```
 
-### Opción 2: Clonar para desarrollo o inspección
-
-```bash
+# O mantener el clon y apuntar el agente a él
 git clone https://github.com/DragonJAR/OpenCode-Orchestrator-Skill.git
-cd OpenCode-Orchestrator-Skill
 ```
+
+### Requisitos
+
+| Herramienta | Para qué | Notas |
+|---|---|---|
+| **POSIX `sh`** | todos los scripts | `/bin/sh`. En Windows usa **Git Bash** o **WSL**, nunca `cmd.exe`. |
+| **`awk`** | parseo y los validadores | awk POSIX estándar |
+| **`python3`** | la capa JSON, el lock, el merge de tabs | los *validadores* no lo necesitan; el orquestador sí |
+| **OpenCode** | el runtime objetivo | serie 2.x, con una instancia corriendo |
+| **Git** | el checkout | el repo fuerza finales de línea LF vía `.gitattributes` |
+
+> **Windows:** ejecuta todo dentro de Git Bash o WSL. `attach-tabs` necesita un
+> python3 con `fcntl` (el de MSYS2); sin él el script falla de forma cerrada y
+> te dice qué instalar.
 
 ---
 
-## ⚙️ Requisitos y Entorno
-
-La skill y su suite de validación han sido diseñadas con **cero dependencias externas**, aprovechando las utilidades estándar POSIX del sistema:
-
-| Herramienta | Versión Requerida | Propósito |
-|-------------|-------------------|-----------|
-| **POSIX `sh`** | Estándar (`/bin/sh`) | Ejecución de validaciones y runner de scripts |
-| **`awk`** | Estándar POSIX (nawk, gawk, mawk) | Parseo del ledger, validación léxica de scopes y gates de cierre |
-| **OpenCode** | Serie 2.0.x (snapshot V2) | Runtime destino de ejecución de sesiones y herramienta `subagent` |
-| **Git** | 2.0+ | Control de versiones con imposición de finales de línea LF |
-
-### Verificación del Entorno
-
-Ejecuta el validador estructural desde la raíz del repositorio:
-
-```bash
-sh .agents/maintenance/scripts/validate_skill.sh
-```
-
-Salida esperada:
-```text
-[OK]   SKILL.md existe y es UTF-8 legible
-[OK]   Frontmatter válido dentro del subconjunto YAML documentado; claves únicas
-[OK]   Campo name válido (opencode-orchestrator-skill)
-[OK]   Campo description decodificado presente y <= 1024 caracteres (553)
-[OK]   SKILL.md <= 5000 palabras (4959)
-[OK]   references/ existe con archivos Markdown (15)
-[OK]   Análisis Markdown completo: 55 enlaces inline encontrados (55 locales, 0 externos)
-----------------------------------------
-TOTAL: 7 passed, 0 failed
-```
-
-> **Entornos Windows:** Ejecuta los validadores y los scripts de orquestación (`orchestrate-windows.sh`) dentro de **Git Bash** o **WSL** — nunca directamente desde `cmd.exe` (requiere un `sh` en PATH). Los archivos `.sh` deben conservar finales de línea **LF**; el repositorio lo impone de forma automática mediante `.gitattributes` (`*.sh text eol=lf`). Para `attach-tabs` en Git Bash se requiere un python3 con `fcntl` (python de MSYS2); si falta, el script falla cerrado con instrucciones.
-
----
-
-## 🧩 Arquitectura y Jerarquía
-
-La orquestación multiagente en OpenCode opera rigurosamente en dos niveles:
-
-```text
- ┌───────────────────────────────────────────────────────────────┐
- │                   ORQUESTADOR (Agente Raíz)                   │
- │  - Administra y custodia el ledger YAML (schema_version 3)    │
- │  - Crea las sesiones worker raíz (parentID: null)             │
- │  - Preautoriza tareas, presupuestos de escritura y criterios │
- │  - Sondea, reconcilia, verifica evidencia y cierra el ledger  │
- └───────────────────────────────┬───────────────────────────────┘
-                                 │ HTTP POST /api/session (directory)
-                                 ▼
- ┌───────────────────────────────────────────────────────────────┐
- │                 SESIÓN WORKER (Worker Raíz)                   │
- │  - Sesión nativa con parentID: null                           │
- │  - Recibe presupuesto de escritura y tareas preautorizadas    │
- │  - Coordina al menos 2 subagentes hijos distintos             │
- │  - NUNCA modifica ni edita el ledger compartido               │
- │  - Inspecciona entregables, integra hallazgos y reporta YAML  │
- └───────────────────────────────┬───────────────────────────────┘
-                                 │ Llamada nativa a herramienta subagent
-                ┌────────────────┴────────────────┐
-                ▼                                 ▼
- ┌─────────────────────────────┐   ┌─────────────────────────────┐
- │     SUBAGENTE HIJO (S1)     │   │     SUBAGENTE HIJO (S2)     │
- │ - parentID: workerSessionID │   │ - parentID: workerSessionID │
- │ - Scope: artifacts/s1/      │   │ - Scope: artifacts/s2/      │
- │ - Genera S1-output.md       │   │ - Genera S2-output.md       │
- │ - Escribe S1-evidence.yml   │   │ - Escribe S2-evidence.yml   │
- └─────────────────────────────┘   └─────────────────────────────┘
-```
-
-### Reglas de Presupuesto y Scopes de Escritura
-
-1. **Subconjuntos Disjuntos:** El `scope_escritura` de cada subagente debe ser un subconjunto explícito del presupuesto del worker padre.
-2. **Sin Escrituras Simultáneas:** Tareas hermanas con rutas solapadas se serializan forzosamente mediante dependencias en el DAG (`dependencias: ["S1"]`).
-3. **Silencio del Padre:** El worker padre nunca escribe en el scope de un hijo mientras este siga activo o con estado incierto.
-4. **El Timeout no Libera Scopes:** Si vence una ventana de espera, el scope permanece bloqueado hasta reconciliar formalmente el estado de la sesión vía API.
-
----
-
-## 🚀 Flujo Operativo de 8 Pasos (Playbook)
-
-La skill implementa un ciclo de vida operativo riguroso, mapeado desde `SKILL.md` y detallado en [`SKILL/references/playbook.md`](SKILL/references/playbook.md):
-
-1. **Detectar Intención y Alcance:** Concretar objetivos, entregables y asignar scopes de directorio independientes.
-2. **Preflight de Capacidades Reales:** Consultar `GET /api/info`, `GET /api/location` y `/openapi.json` para validar endpoints HTTP y herramientas activas antes de despachar.
-3. **Acceso e Identidad:** Confirmar autorización y directorio del proyecto. Sin acceso, parar e informar los permisos requeridos (Modo Degradado A).
-4. **Borrador de Ledger y Preautorización:** Registrar en el ledger YAML Esquema 3 las filas de tareas en estado `pending`, preautorizando al menos dos tareas subagent por worker.
-5. **Despachar Sesión Worker Raíz:** Crear la sesión vía `POST /api/session` con `location.directory` explícito. Verificar `parentID: null` y enviar el prompt estructurado.
-6. **Coordinar Subagentes:** El worker ejecuta las hijas mediante la herramienta nativa `subagent`. Cada hija hereda y comprueba la ubicación canónica.
-7. **Supervisar y Reconciliar:** El orquestador ejecuta lectura acotada (`GET /api/session/{id}`). Comprueba solicitudes pendientes de permisos (`GET /api/session/{id}/permission`) y re-arma plazos solo si hay actividad real.
-8. **Inspeccionar, Verificar y Cerrar:** El orquestador inspecciona entregables, audita archivos de evidencia (`criterion`, `result: "pass"`, `observed`), integra hallazgos y ejecuta los validadores antes de cerrar.
-
----
-
-## 🔍 Suite de Validación
-
-El repositorio provee validadores independientes de alto rendimiento escritos en shell POSIX:
-
-### 1. Validación de DAG y Ledger en Vuelo (`validate_dag.sh`)
-
-Comprueba la sintaxis canónica YAML, identificadores de tareas, relaciones parentales, ausencia de ciclos en el DAG, scopes concurrentes no solapados y coherencia temporal:
-
-```bash
-sh SKILL/scripts/validate_dag.sh ruta/al/ledger.yml
-```
-
-### 2. Validación Estricta de Cierre (`validate_ledger_closed.sh`)
-
-Exige que todas las tareas hayan finalizado exitosamente con `estado: verified`, `execution_outcome: succeeded`, artefacto en `output_path` y evidencia válida en `evidence_refs`:
-
-```bash
-sh SKILL/scripts/validate_ledger_closed.sh --require-evidence ruta/al/ledger.yml
-```
-
-### 3. Validación de Cierre en Ejecuciones Degradadas (`--allow-degraded`)
-
-Cuando una ejecución multiagente se topa con bloqueos externos, denegaciones de permisos o tareas incompletas justificadas, debe cerrarse en un estado terminal auditado (`partial`, `blocked`, `failed`):
-
-```bash
-sh SKILL/scripts/validate_ledger_closed.sh --allow-degraded ruta/al/ledger.yml
-```
-
-`--allow-degraded` asegura que:
-- Ninguna tarea quede en un estado activo o en vuelo (`pending`, `launching`, `running`, `awaiting-approval`, `outcome-unknown`).
-- Toda tarea terminal no verificada contenga `notas` no vacías con la explicación técnica de la causa.
-- Cualquier tarea marcada `verified` cumpla al 100% las exigencias de evidencia y resultado.
-
----
-
-## 📁 Estructura del Repositorio
+## Estructura del repositorio
 
 ```text
 OpenCode-Orchestrator-Skill/
-├── .gitattributes                  # Impone finales LF en todos los scripts shell
-├── .gitignore                      # Lista blanca estricta contra fugas accidentales
-├── README.md                       # Guía completa en inglés
-├── README.es.md                    # Guía completa en español
-└── SKILL/                          # Paquete distribuible de la skill
-    ├── LICENSE                     # Licencia MIT
-    ├── SKILL.md                    # Especificación principal, R1-R15, decision gates
-    ├── references/                 # Guías operativas de referencia
-    │   ├── agent-patterns.md       # Reparto worker → subagents y fichas de despacho
-    │   ├── agents-and-safety.md    # Catálogo de agentes, permisos y presupuestos
-    │   ├── api-and-sessions.md     # API HTTP, lectura acotada y reconciliación
-    │   ├── decision-trees.md       # Árboles de decisión para preflight, bifurcación y cierre
-    │   ├── failure-matrix.md       # Modos de fallo observables, acciones y antipatrones
-    │   ├── ledger-template.md      # Esquema canónico YAML, gates y formato de evidencia
-    │   ├── opencode-patterns.md    # Índice maestro de mecanismos operativos
-    │   ├── playbook.md             # Flujo operativo de 8 pasos y checklist de cierre
-    │   ├── prompt-templates.md     # Plantillas de prompt estandarizadas (1 a 5)
-    │   ├── recipe-tui-tabs.md      # Auth HTTP directa y receta local de tabs TUI
-    │   ├── research-evidence.md    # Rastreo upstream, versiones y evidencia de auditoría
-    │   ├── subagent-contract.md    # Contrato de la herramienta subagent y reglas de ubicación
-    │   ├── naming-convention.md    # Patrón de títulos `[NN] Name`
-    │   ├── trigger-tests.md        # Banco de pruebas de activación y defensas
-    │   └── triggers-es.md          # Ejemplos de disparadores en español
-    └── scripts/                    # Validadores shell POSIX + orquestador (cero dependencias)
-        ├── orchestrate.sh           # Navaja multi-OS (12 subcomandos)
-        ├── orchestrate-{darwin,linux,wsl,windows}.sh  # Wrappers explícitos por OS
-        ├── preflight.sh             # Descubrimiento endpoint + gate de tabs (cachea estado)
-        ├── watch_run.sh             # Vigilante acotado POSIX+awk (idle + artefactos)
-        ├── dragon_name.sh           # Catálogo de 100 nombres + síntesis determinista
-        ├── _validators.awk          # Helpers awk compartidos (incluidos por los validadores)
-        ├── prompt-templates/        # Instrucción router instalada por init-run (R13e)
-        │   └── router-orchestrator.md
-        ├── validate_dag.sh         # Validador de DAG, sintaxis y scopes
-        ├── validate_ledger_closed.sh # Validador final del gate de cierre (--allow-degraded)
-        └── os/                      # Adaptadores por OS: lock + normalización de paths
-            ├── _common.sh        # Helpers compartidos (auth, cache, json, pool, tabs)
-            ├── darwin.sh         # macOS: python3 fcntl
-            ├── linux.sh          # Linux: flock(1)
-            ├── wsl.sh            # WSL: flock(1), drvfs fail-closed
-            ├── windows-gbash.sh  # Git Bash: python3 fcntl con sonda MSYS2
-            └── tui-detect.sh     # Detector de TUI activa / gate de tabs (sólo lectura)
-
+├── .github/workflows/ci.yml     # CI: sh -n + shellcheck sobre cada script
+├── .gitattributes               # finales de línea LF para todos los scripts
+├── .gitignore                   # lista blanca estricta: solo se publica el paquete
+├── README.md                    # este archivo
+├── README.es.md                 # este archivo (edición en español)
+├── CHANGELOG.md                 # cada arreglo, con su síntoma
+├── LICENSE                      # MIT
+└── SKILL/                       # el paquete que se instala
+    ├── LICENSE                  # MIT (incluida dentro del paquete)
+    ├── SKILL.md                 # la especificación que carga el agente
+    ├── references/              # 15 documentos operativos
+    └── scripts/
+        ├── orchestrate.sh       # la capa de comandos (17 subcomandos)
+        ├── orchestrate-{darwin,linux,wsl,windows}.sh   # wrappers por OS
+        ├── preflight.sh         # descubrimiento + la puerta de tabs
+        ├── watch_run.sh         # vigilante acotado
+        ├── package.sh           # construye el ZIP distribuible (lista cerrada)
+        ├── dragon_name.sh       # 100 nombres deterministas para la sesión root
+        ├── validate_dag.sh      # validador de DAG / sintaxis / scopes
+        ├── validate_ledger_closed.sh  # validador del gate de cierre
+        ├── _validators.awk      # helpers awk compartidos
+        └── os/                  # adaptadores por OS (lock, paths, merge de tabs)
 ```
 
 ---
 
-## 🎓 Frases Disparadoras (Triggers)
+## Frases de activación
 
-La skill está calibrada para activarse con intenciones claras de orquestación multiagente y permanecer inactiva en solicitudes individuales o genéricas:
+La skill se activa con una intención explícita de orquestación multi-agente y se
+mantiene inactiva en los demás casos.
 
-### Casos que deben activar la Skill:
-- *"Orquesta varias sesiones de OpenCode: crea dos workers y que cada uno lance al menos dos subagents para revisar los módulos auth y billing, y luego integra los resultados."*
-- *"Necesito delegar en OpenCode una migración grande: gestiona las sesiones, reparte scopes de escritura sin solapes y dime qué worker quedó verificado."*
-- *"Spawn workers and subagents in my OpenCode server for a multi-agent run, track them in a ledger and validate the DAG before closing."*
-- *"Gestiona una ejecución multiagente en OpenCode y valida el ledger YAML al terminar."*
+**Se activa con**
+- *"Orchestrate multiple OpenCode sessions: spawn two workers and have each run at least two subagents to audit auth and billing."*
+- *"Delegate a large migration in OpenCode: manage sessions, partition write scopes without overlap, and verify worker outcomes."*
+- *"Spawn workers and subagents in my OpenCode server, track them in a YAML ledger, and validate the DAG before closing."*
+- *"Orquesta varias sesiones de OpenCode y valida el ledger al terminar."*
 
-### Casos que NO deben activar la Skill:
-- *"Explícame qué es un agente de IA y en qué se diferencia de un chatbot."* (Concepto general)
-- *"Corrige el bug de este componente React que rompe el submit del formulario."* (Tarea de un solo agente)
-- *"Orchestrate a nightly Airflow pipeline that loads CSV files."* (Pipeline de datos, otro runtime)
-
----
-
-## ⚠️ Reglas Duras y Límites Operativos (R1–R15)
-
-| Regla | Principio | Aplicación Operativa |
-|-------|-----------|----------------------|
-| **R1** | **Acceso Autorizado** | Sin acceso confirmado, limita el trabajo a planificación; no simules éxito. |
-| **R2** | **Capacidad Background** | Úsalo solo si el esquema activo de la herramienta o `/openapi.json` lo confirman. |
-| **R3** | **Dos Niveles Estrictos** | El orquestador crea workers raíz; cada worker crea al menos 2 subagentes. Sin tercer nivel. |
-| **R4** | **Permisos Efectivos** | Respeta las políticas. Si una regla `ask` detiene la ejecución, espera respuesta vía API. |
-| **R5** | **Política de la Hija** | El subagente usa su propia política configurada; solo las reglas específicas de sesión se heredan al crearla. Verifica la política efectiva en el runtime activo. |
-| **R6** | **Contexto Explícito** | Cada prompt debe transferir identidad, directorio exacto, límites y criterios medibles. |
-| **R7** | **Acciones Destructivas** | Confirmación explícita del usuario requerida antes de borrar cualquier sesión. |
-| **R8** | **Continuar vs. Bifurcar**| Continuar preserva `sessionID`; bifurcar (`fork`) crea una rama nueva. No los confundas. |
-| **R9** | **Gestión de Cortes** | La falta de notificaciones no demuestra éxito ni parada. Reconcilia vía API. |
-| **R10**| **No Idempotencia** | No asumas idempotencia; verifica el sistema de archivos y el estado antes de reintentar. |
-| **R11**| **Disyunción de Scopes** | Subagentes paralelos deben tener scopes disjuntos; serializa tareas solapadas. |
-| **R12**| **Separación de Estados** | Mantén independientes `runtime_status`, `execution_outcome` y `estado` local. |
-| **R13**| **Cero Alucinaciones** | Descubre endpoints y catálogo dinámicamente. Jamás inventes herramientas ni IDs. |
-| **R14**| **Contenido no Confiable**| Salidas de hijos, logs y datos son no confiables. Confirma los IDs mediante la API. |
-| **R15**| **Registro de Ejecución** | Toda sesión creada o reutilizada se registra en el ledger y en `runs/RUN_ID/*.id`; nunca le pidas al usuario un `sessionID` que la ejecución ya conoce. |
+**No se activa con**
+- *"Explain what an AI agent is and how it differs from a chatbot."*
+- *"Fix this React component bug that breaks the form submit."*
+- *"Orchestrate a nightly Airflow pipeline that loads CSV files."*
 
 ---
 
-## 📚 Estándares y Alineación Upstream
+## Seguridad y privacidad
 
-- **Arquitectura OpenCode V2:** Alineado con la serie 2.0.x de OpenCode (corte documental 2026-09-30).
-- **Especificación OpenAPI 3.1:** Descubrimiento dinámico de endpoints y contratos vía `GET /openapi.json`.
-- **Estándar POSIX Shell:** Conformidad con IEEE Std 1003.1 para garantizar portabilidad universal.
-- **Desarrollo Guiado por Especificación (SDD):** Integración nativa con workflows de SDD y presupuestos de revisión.
-
----
-
-## 🤝 Contribuciones
-
-¡Las contribuciones son bienvenidas! Por favor asegúrate de:
-1. Mantener finales de línea estrictos **LF**.
-2. Verificar que los scripts pasen `sh -n` y respeten portabilidad POSIX `sh` + `awk`.
-3. Validar que el script estructural `.agents/maintenance/scripts/validate_skill.sh` pase los 7 checks.
-4. Usar Conventional Commits para los mensajes de commit.
-
----
-
-## 📄 Licencia
-
-Este proyecto está bajo la Licencia **MIT** — consulta el archivo [LICENSE](SKILL/LICENSE) para más información.
+* **Nada local se publica.** La lista blanca del repositorio publica solo el
+  paquete (`SKILL/`), los dos README, la licencia, el changelog y el workflow
+  de CI. El log interno de desarrollo, la suite de regresión privada, el
+  tooling de validación del mantenedor, la evidencia de corridas y las notas
+  locales están git-ignorados y se quedan en tu máquina.
+* **Ninguna credencial en el repositorio.** La contraseña del servicio se lee
+  en runtime desde `service.json`; nunca se guarda en el repo ni se imprime. El
+  historial público fue auditado buscando cadenas con forma de secreto.
+* **Ninguna ruta personal.** El árbol publicado no contiene rutas absolutas
+  del home ni identificadores de la máquina del mantenedor.
+* **Los scripts son de solo lectura por defecto.** Solo `create-worker`,
+  `delete-session`, `clean` y `attach-tabs` cambian algo, y los destructivos
+  exigen aprobación explícita.
 
 ---
 
-## 👨‍💻 Autor
+## Contribuir
 
-**DragonJAR SAS** — [https://www.DragonJAR.org](https://www.DragonJAR.org)
+1. Mantén finales de línea **LF** (lo impone `.gitattributes`).
+2. Los scripts de shell deben pasar `sh -n` y ser portables a POSIX `sh` + `awk`.
+3. Las comprobaciones de CI deben pasar: `sh -n` sobre cada script y
+   `shellcheck --severity=error` sin hallazgos.
+4. `sh SKILL/scripts/package.sh` debe construir, y la lista cerrada debe
+   coincidir exactamente con el árbol.
+5. Muestra la evidencia de un cambio de comportamiento: el comando y su salida.
+6. Usa Conventional Commits.
 
-*Expertos en servicios de seguridad informática, pruebas de penetración, investigación y arquitecturas agentic avanzadas.*
+---
 
-- **Sitio Web:** [www.DragonJAR.org](https://www.dragonjar.org)
+## Licencia
+
+MIT — ver [LICENSE](LICENSE) (incluida dentro del paquete como `SKILL/LICENSE`).
+
+---
+
+## Autor
+
+**DragonJAR SAS** — <https://www.DragonJAR.org>
+
+*Líderes en servicios de ciberseguridad, pentesting, investigación de seguridad y arquitecturas agénticas avanzadas.*
+
+- **Web:** [www.DragonJAR.org](https://www.dragonjar.org)
 - **Servicios:** [Servicios de Seguridad Informática](https://www.dragonjar.org/servicios-de-seguridad-informatica)
 
 ---
 
-## 🔄 Fuente de Verdad y Sincronización
+## Fuente de verdad
 
-Este repositorio (rama `main`) es la fuente canónica de la skill. Si mantienes copias locales en los directorios de agentes, resincronízalas con:
+La rama `main` de este repositorio es la fuente canónica. Para resincronizar una
+copia local en el directorio de skills de un agente:
 
 ```bash
-git -C /path/to/OpenCode-Orchestrator-Skill pull
 rsync -av --delete --exclude '.git' --exclude '.agents' --exclude 'reports' \
   /path/to/OpenCode-Orchestrator-Skill/SKILL/ ~/.agents/skills/opencode-orchestrator-skill/
 ```

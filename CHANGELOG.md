@@ -7,94 +7,154 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
-- **dispatch was broken end-to-end**: it read the always-empty slug column
-  instead of the sessionID; pool_list now emits a slugified name in column 4
-  (restores create-worker dedup and find_dedup) and dispatch reads column 5.
-- Removed dead code: split_items (0 callers), a write-only shell variable,
-  a never-read python binding, dead env exports in the windows/wsl adapters.
-- Documentation aligned with the live schema (2.0.29): PATCH session.update
-  documented, stale version pins refreshed, session-id subcommand added to
-  the table, parentID listed, broken cross-link repaired.
-- **Packaging closed list synced with the linked tree**: the recipe in
-  `.agents/maintenance/testing-and-iteration.md` shipped the two ledger
-  validators without their hard dependency `scripts/_validators.awk` (both
-  exit 2 with `ERROR: shared awk library missing`) and omitted
-  `references/naming-convention.md` and `references/triggers-es.md`, both
-  linked from `SKILL.md`. The distributed ZIP therefore carried
-  non-executable validators and 2 dead links. The closed list now ships
-  the awk library and the 2 references (inventory 20 -> 23).
-- preflight authenticates `/openapi.json` (S2): the `-u opencode:<password>` flag was
-  being built correctly but quoted in the curl invocations, which made
-  curl treat it as a single token with an embedded space and return 401
-  against an auth-required server. Adopted the convention already
-  documented in `os/_common.sh` (unquoted `AUTH`).
-- `cache_put` redacts sensitive values before persisting (S1): `apiKey`,
-  `password` and `token` values (case-insensitive) are recursively
-  replaced with `"[REDACTED]"` in any JSON body, keeping the JSON valid.
-  Non-JSON values pass through unchanged.
-- Public documentation consistency: Spanish badge synced to 1.0.2 (D9)
-  and validator invocation in README uses `sh` to align with `#!/bin/sh`
-  and the frontmatter (D8).
-- Spanish README validator snapshot refreshed to the actual output
-  (4959 words, 15 references) and duplicated Fixed sections consolidated.
-- SF-B (D12, documentation off-by-one): the C1 bullet reported
-  "inventory 19 -> 22" perpetuating the wrong T2 count; git archaeology
-  + C1-evidence confirm the closed ZIP list went from **20 → 23**
-  entries (3 dirs + 20 pre-C1 files; +`_validators.awk` +
-  `naming-convention.md` + `triggers-es.md` = 23). Minimal 1-word fix.
-- SF-A (D11, latent S2 bug): 6 `curl "$AUTH"` invocations in `watch_run.sh`
-  (L37, L49) and `orchestrate.sh` (L201, L238, L250, L560) corrected to
-  `${AUTH:-}` — same pattern as the C4 fix in preflight.sh; when quoted,
-  the `-u opencode:<password>` flag arrives at curl as a single token
-  and the request fails with 401 against a serve with auth. The 4
-  affected scripts are `#!/bin/sh`.
-- V3-A (S1 residue, chmod 600 fail-closed): the `chmod 600` on the
-  preflight `auth_password` cache was best-effort (`2>/dev/null || :`);
-  on filesystems without POSIX permissions (FAT/9P/drvfs) the file
-  stayed with the password in plaintext and default perms. Now
-  fail-closed: if `chmod 600` fails, the file is removed and preflight
-  aborts with exit 1 and the cause to stderr.
-- V3-A (gate pin validated before the call): `OPENCODE_TUI_PINNED_VERSION`
-  with minor/patch (e.g. `2.0.32`) made `tui-detect.sh` exit 2 and the
-  `2>/dev/null` in `resolve_gate` and `sub_tabs` turned that into an
-  empty gate that silently fell back to the cache (possibly stale). The
-  pin is now validated with a `case *.*` BEFORE invoking the detector
-  (2 sites), same fail-closed criterion as the detector itself.
-- V3-B (24 → 42, post-1.0.2 packaging restructure): the 3 commits
-  `3a0d075` (ship-ready packaging) and `7f4896b` (DRY in
-  `EXPECTED_DIRS`) consolidated the recipe into `SKILL/scripts/package.sh`
-  with `PACKAGE_FILES` as the single source of truth. The ZIP went from
-  24 → **42** entries (37 files + 4 unique dirs — `references/`,
-  `scripts/`, `scripts/os/`, `scripts/prompt-templates/` — + 1 root dir).
-  The C3 bullet ("grows to 24") is kept as a historical record of its
-  effect; this bullet documents the subsequent evolution not reflected
-  in [Unreleased].
-- V3-ORTHO (package.sh perms 711→755): the packaging script had
-  `-rwx--x--x` (711) perms inherited from the source file, unreadable
-  for group/other in the distributed package; the skill convention is
-  755 (all other scripts in the package are). 1-bit fix (chmod 755),
-  verified by re-packaging: the ZIP now ships package.sh readable and
-  executable; preflight smoke-test from the extracted package exit 0.
-- V3-C (validator accepts optional `[DIR]`): `validate_skill.sh`
-  silently ignored positional arguments and always validated the
-  canonical skill in the repo; now accepts an optional `[DIR]`
-  (`ROOT` override with `CDPATH= cd -- "$1"`) to validate copies or
-  stubs in isolation, consistent with `orchestrate.sh`/`preflight.sh`/
-  `watch_run.sh`. Without an argument the behavior is identical; with
-  a non-existent directory it aborts fail-fast (exit 1 and `cd` error
-  message) instead of silently ignoring.
-- V3-C (G1, Keep-a-Changelog compare links): added the 4 link
-  definitions at the bottom of the file (`[Unreleased]` to
-  `v1.0.2...HEAD` and the compares of `[1.0.2]`, `[1.0.1]` and the release
-  tag of `[1.0.0]`) using the actual remote owner
-  (`DragonJAR/OpenCode-Orchestrator-Skill`), completing the
-  Keep-a-Changelog convention of the changelog.
+A full line-by-line audit of the package (every script, every reference
+document) and a sweep that looked for each defect class in every other place
+it could occur. Each entry below names the observable symptom.
+
+**A flag without a value hung the process.**
+`shift 2` with fewer than two arguments left does not advance the argument list
+(POSIX: the shift fails and `$#`/`$1` stay unchanged), so the flag parser
+re-read the same flag on every iteration: `orchestrate.sh send-prompt --session`
+(no value) spun at 100% CPU with no output and no timeout. 21 call sites were
+affected. One shared guard (`assert_value` in `os/_common.sh`) now fails closed
+with exit `2` and a clear message on every value-taking flag.
+
+**Extracted values were silently truncated.**
+The JSON extractions mixed two offset conventions: when the pattern did not
+include a string value's closing quote but the length still subtracted it, the
+value lost its last character and every numeric field lost a digit. The printed
+`msgID` was not a real id (`msg_01HXYZABCDEF`) and `time.updated` came back as
+`79269316699` instead of `1792693166999`, so a busy session could compare as
+"older than idle". Every extraction now goes through one shared getter
+(`json_get_field`), and the per-record scans derive their offsets from the key
+instead of hardcoding them.
+
+**A prompt could reach the wrong session.**
+`dispatch --target NNsMM` — the form the router prompt documents — matched the
+**parent worker**: awk coerces `01s02` to the number `1`, and the idle set only
+held workers, so a sub-agent target was unreachable. The selector now compares
+the ordinal *and* the sub-agent index.
+
+**`delete-session --force` deleted without asking.**
+It skipped the children check *and* the confirmation, so a destructive delete ran
+with no approval, while the documentation promised only the children check.
+`--force` now waives ONLY the children check; the confirmation always applies.
+
+**A failed fetch could be read as an empty one.**
+The pool ordinal was derived from a second, unguarded API call whose failure was
+swallowed (a pipeline keeps the exit code of its last stage), so a failed fetch
+read as "max ordinal 0" and the next worker took an ordinal that was already
+deployed. The pool is now fetched once and the ordinal derived from that
+snapshot.
+
+**Pagination could return a truncated list as if it were complete.**
+The paginator always appended `?limit=200`, so a path that already carried a
+query string (`/api/session?parentID=X`) got a second `?` inside the value:
+the filter matched nothing and the child enumeration silently returned an empty
+list, losing the topological order. `clean` also stopped at the first malformed
+page and reported a partial list as the whole one. A malformed page is now
+fatal, and the three filtered fetches go through the paginated helper.
+
+**`clean` could report success having deleted nothing.**
+If its temporary deletion log was missing or unwritable, both counters read zero
+and the command exited 0 with the tabs prune and the cache purge skipped. The
+counts must now add up to the plan, or the run stops.
+
+**Cross-OS: every session creation failed under Git Bash.**
+The lock helper converted the helper script path for Git Bash but not the lock
+file, so a native Win32 python could not open it and `create-worker`,
+`ensure-root` and `init-run` all failed closed. The lock file is converted too.
+
+**The four OS adapters had drifted.**
+Each carried its own copy of the tabs-merge skeleton: the Git Bash one had the
+arity guard and the others did not (a wrong arity returned "no-tui" on three
+operating systems and "usage" on Git Bash), and it had no "tabs.json must
+exist" check (a missing file returned a raw lock error instead of "no-tui").
+The skeleton now lives in `os/_common.sh` and each adapter declares only what is
+genuinely OS-specific.
+
+**Six resolvers for one path.**
+The tabs.json path was resolved in six places, and the merge python's copy had
+different rules (no CLI fallback, no XDG default, no channel scan), so the lock
+guarded one file while the merge wrote another. There is now one resolver, and
+the state root has one too: with `ORCHESTRATE_STATE_ROOT` set, the TUI gate and
+the tabs merge used to resolve different roots and the tabs feature broke
+silently.
+
+**The cache could be written non-atomically, or through a symlink.**
+Preflight wrote 14 keys with plain redirects (neither atomic nor symlink-safe)
+and read the service password with a pattern that required `"password":"`
+exactly, so a pretty-printed `service.json` left the run silently
+unauthenticated. One hardened writer is now used everywhere, and the password
+is written verbatim so the redaction cannot corrupt it.
+
+**The packaged skill was incomplete.**
+The closed list shipped 2 of the 22 regression fixtures, so the published
+package referenced files it did not contain, and the ZIP itself was written
+inside the temporary directory the cleanup trap deletes — the recipe produced
+no durable artifact. The distributable now carries exactly the runtime, and
+the package build fails when the closed list and the tree disagree.
+
+**A page with a literal newline broke the pagination.**
+The serve sporadically emits a page whose JSON string contains a raw newline
+(a title with an embedded line break). The pages were merged by reading them
+LINE by LINE, so that newline cut the document in half: the parse failed, the
+pagination stopped and the caller received a truncated list. Once a truncated
+list became fatal (see above), the whole run died instead. The pages are now
+decoded one document at a time with the raw JSON decoder, and every parse of a
+serve response accepts control characters inside strings.
+
+**The Git Bash adapter checked one file and wrote another.**
+The existence check on `tabs.json` ran on the path BEFORE the OS-specific
+conversion, while the lock and the merge used the converted one. A file
+reachable only under the converted path was reported as "no-tui". The
+conversion now happens first, so the check, the lock and the write always name
+the same file.
+
+**The pool query downloaded the whole catalog of the instance.**
+`GET /api/session` accepts a `directory` filter, but the pool, the inventory
+and the session lookup ignored it: they fetched every session of the serve
+(thousands, 50 per page) and filtered client-side. On a big instance that is
+30+ requests per command, it can fail intermittently, and the run died with
+"could not query the worker pool". The query is now filtered by project (the
+client-side filter stays as a safety net): the pool went from ~30 s to ~3 s
+and stopped failing.
+
+**`init-run` could not be run twice.**
+The `[00]` root is reused when it already exists, but the dedup guard treats a
+busy session as a collision, and the router prompt alone leaves the root
+busy: the second `init-run` aborted with "collision: '[00] Orchestrator' is not
+reusable". The root slot belongs to `init-run` and survives runs, so an
+existing root is now reused (never replaced) and the router instruction is
+only installed on a freshly created one -- sending it again would post a
+message into the operator's live session.
+
+**Other corrections:** the router install no longer hides a failure; the
+unguarded API calls report a transport error instead of misdiagnosing it as a
+missing model or a wrong id; the temporary file used by `clean` no longer falls
+back to a predictable `/tmp` path; the project lock refuses to be created
+through a symlink; `tabs` and `attach-tabs` compare the same field; the
+`clean --force` flag that did nothing was removed; the `session-id` subcommand
+and the `--force-tabs` flag were missing from the help text.
 
 ### Changed
+- The `tabs.json` merge, the state-root resolution and the pool ordinal are now
+  single-sourced instead of being re-implemented per script or per operating
+  system.
+- Every JSON field extraction goes through the shared getter, or through a
+  derived-offset scan where a whole-document read does not apply. No hand-written
+  offset remains in the package.
+- The documentation now matches the code: the default root name, the sub-agent
+  title form, the pool-derived ordinal, the tab-gate field names, the version
+  gate, the subcommand count and the endpoint placeholders
+  (`/api/session/{sessionID}`, verified against the live `/openapi.json`).
 
-- Packaging recipe extracted to `SKILL/scripts/package.sh` (versioned,
-  executable script, single source of truth for the closed list). The
-  list grows to 24 entries to include the script itself.
+### Added
+- A root `LICENSE`: GitHub could not detect the license, which lived only
+  inside the package.
+- CI now runs on **Linux, macOS and Windows** (Git Bash): syntax, shellcheck
+  and the package build on every push, so the three platforms are verified
+  instead of inspected.
 
 ## [1.0.2] - 2026-10-14
 
@@ -106,10 +166,9 @@ concurrent-session backup files.
 
 ## [1.0.1] - 2026-10-08
 
-Patch release over v1.0.0. Closes the post-v1.0.0 RSI run (cycles
-1-26 in `RSI_LOG.md`) and ships the 1 new subcommand + the
-shellcheck reductions + the CI workflow. Each entry cites the
-commit that introduced it (no other source of truth).
+Patch release over v1.0.0. Closes the post-v1.0.0 hardening cycle and ships
+the 1 new subcommand + the shellcheck reductions + the CI workflow. Each entry
+cites the commit that introduced it (no other source of truth).
 
 ### Summary
 
@@ -119,7 +178,7 @@ commit that introduced it (no other source of truth).
 - New CI: `.github/workflows/ci.yml` runs `shellcheck` + `sh -n`
   on every push and pull request to `main` (Linux runner; 2/2
   steps green).
-- 1 regression introduced and reverted (cycle 13): the
+- 1 regression introduced and reverted: the
   `${AUTH:-}` quoting in `os/_common.sh` http wrappers caused
   HTTP 401; the unquoted form is restored and documented inline.
 - 0 changes to the public API of `watch_run.sh`; the short
@@ -159,7 +218,7 @@ commit that introduced it (no other source of truth).
 - **CHANGELOG entries for the bugs above** — this section closes the
   drift between git history and the documented release.
 
-### Added (post-v1.0.0 RSI, tracked but not part of v1.0.0)
+### Added (post-v1.0.0, tracked but not part of v1.0.0)
 
 - **`orchestrate.sh session-id COMPACT_REF`** subcommand. Closes the
   long-standing gap between `naming-convention.md` (which described

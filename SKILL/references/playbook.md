@@ -66,7 +66,7 @@ sh scripts/orchestrate.sh preflight "$PWD"                                  # P2
 sh scripts/orchestrate.sh init-run --worker "Vermithrax" --worker "Glacielle" # root [00] + workers + tabs
 ```
 
-`init-run` creates the root `[00] Orquestador`, creates each worker with its verified `sessionID`, applies the sequential numbering from the [naming convention](naming-convention.md), and exposes the tabs when the gate says `ready`. One `--worker` per session: **space cannot be the list delimiter** because it is part of the title. It also accepts `--workers "A, B, C"`.
+`init-run` creates the root `[00] Orchestrator`, creates each worker with its verified `sessionID`, applies the sequential numbering from the [naming convention](naming-convention.md), and exposes the tabs when the gate says `ready`. One `--worker` per session: **space cannot be the list delimiter** because it is part of the title. It also accepts `--workers "A, B, C"`.
 
 Use `create-worker` step by step only when you truly need it: creating a single worker, forcing a new one with `--force-new`, or reusing the cached preflight. Each standalone call is an extra round-trip, and looping the `create-worker` flow leaves tab exposure undone.
 
@@ -124,7 +124,7 @@ A worker's `verified` gate (minimum of two distinct subagents, correct `parentID
 6. Inherited scopes; overlapping siblings serialized; the parent did not write into active scopes; timeout reconciled before release.
 7. If `run.max_sessions_in_flight` appears, it satisfies the [optional limit rule](ledger-template.md#optional-max_sessions_in_flight-limit).
 8. Artifacts checked against criteria; limitations and pending integration points are recorded in the close-out.
-9. Session identity is also persisted in `runs/RUN_ID/*.id` files (R15); the orchestrator's `runs/<run>/` directory is the on-disk source of truth for session-to-run mapping and is the registry consulted by `orchestrate.sh sessions`.
+9. Session identity is also persisted in `runs/RUN_ID/*.id` files (R15), written by the orchestrator, not by the scripts. The **ledger** is the registry of the run; `orchestrate.sh sessions` is the live catalog of the project (it queries the API by `location.directory`, not the ledger), and `session-id COMPACT_REF` resolves one title to its `sessionID`.
 
 ### Failure paths
 

@@ -3,13 +3,20 @@
 # Detects the OS (or accepts --os); loads per-OS helpers; exposes subcommands.
 # Usage: orchestrate.sh [--os <darwin|linux|wsl|windows-gbash>] <subcmd> [args]
 # Contract: nothing hardcoded; endpoint/model/agents/project are resolved from the active state.
+# Exit codes (wait-idle): 0 idle (0 also for a never-used session), 2 usage, 3 timeout, 4 stuck, 5 session-not-found.
 # shellcheck source-path=scripts source=scripts
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+export SELF_DIR #: sub_clean's tabs-prune helper sources _common.sh via $SELF_DIR
 OS_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --os) OS_OVERRIDE="$2"; shift 2 ;;
+    # The shared guard (os/_common.sh assert_value) is not loaded yet: this
+    # parse runs BEFORE the OS adapter is sourced, because --os decides WHICH
+    # adapter to load. `shift 2` with no value left does not advance the
+    # argument list (POSIX), so the loop would spin forever -- hence the
+    # inline check here.
+    --os) [ $# -ge 2 ] || { printf '%s\n' 'ERROR: --os requires a value' >&2; exit 2; }; OS_OVERRIDE="$2"; shift 2 ;;
     --os=*) OS_OVERRIDE="${1#--os=}"; shift ;;
     --) shift; break ;;
     *) break ;;
@@ -33,14 +40,30 @@ detect_os() {
 }
 OS="${OS_OVERRIDE:-$(detect_os)}"
 
-# OS first (defines os_project_dir / os_tabs_merge); _common after (uses them).
+# OS first (defines os_project_dir / os_tabs_merge); os/_paths.sh next (F5:
+# shared PROJ_DIR/CACHE_DIR derivation, also used by standalone preflight.sh);
+# _common after (requires CACHE_DIR and uses os_project_dir).
 [ -f "$SELF_DIR/os/$OS.sh" ] || { printf 'ERROR: unsupported OS: %s\n' "$OS" >&2; exit 2; }
 # shellcheck disable=SC1091  # runtime-determined source paths (OS-dependent, also fetched by IDLE_POOL later in the file).
 . "$SELF_DIR/os/$OS.sh"
 # shellcheck disable=SC1091
+. "$SELF_DIR/os/_paths.sh"
+# shellcheck disable=SC1091
 . "$SELF_DIR/os/_common.sh"
 
 # auth_flag lives in os/_common.sh (the low layer that uses it), not here.
+
+# assert_uint LABEL VALUE -- refuse unless VALUE is a positive integer (>= 1).
+# D1: `--deadline 120s` reached `[ ... -ge "$DEADLINE" ]`, which printed
+# "integer expression expected" to stderr and CONTINUED: the deadline was never
+# enforced and the command still exited 0. Validated at PARSE time instead,
+# with a portable case (no regex(3)); exit 2 is the documented usage code.
+assert_uint() {
+  case "${2:-}" in
+    ''|*[!0-9]*) printf 'ERROR: %s must be a positive integer, got: %s\n' "$1" "${2:-<empty>}" >&2; exit 2 ;;
+  esac
+  [ "${2:-0}" -ge 1 ] 2>/dev/null || { printf 'ERROR: %s must be >= 1, got: %s\n' "$1" "$2" >&2; exit 2; }
+}
 
 # --- subcommands ----------------------------------------------------------------
 sub_preflight() {
@@ -66,8 +89,20 @@ sub_ensure_root() {
     die "could not query the session catalog for dedup; fail-closed (session not created)"
   fi
   if [ "$GRC" -eq 2 ]; then
+    # The [00] slot belongs to init-run and SURVIVES RUNS (the pool survives
+    # runs). A root that already exists -- busy, or with prior work -- is
+    # REUSED, not refused: the router prompt alone leaves the root "running",
+    # so refusing it made a second init-run impossible. The collision guard
+    # protects a WORKER's work from being overwritten; the root is never
+    # overwritten either, it is reused.
+    EX_ID=$(printf '%s\n' "$GUARD_OUT" | sed -n 's/.* id=\(ses_[A-Za-z0-9]*\).*/\1/p')
+    if [ -n "$EX_ID" ]; then
+      cache_put root_session "$EX_ID"
+      printf 'root_id=%s\nroot_reused=1 note=the [00] session already exists (busy or with prior work); it is reused, never replaced\n' "$EX_ID"
+      return 0
+    fi
     EX_OUT=$(printf '%s\n' "$GUARD_OUT" | sed 's/^COLLISION out=//')
-    die "collision: '$TITLE' already exists with prior work (out=$EX_OUT); use another title or --force-new"
+    die "collision: '$TITLE' is not reusable ($EX_OUT); use another title or --force-new"
   fi
   if [ "$GRC" -eq 0 ]; then
     RID=$(printf '%s\n' "$GUARD_OUT" | awk -F= '/^worker_id/{print $2}')
@@ -95,7 +130,7 @@ sub_create_worker() {
   fi
   if [ "$GRC" -eq 2 ]; then
     EX_OUT=$(printf '%s\n' "$GUARD_OUT" | sed 's/^COLLISION out=//')
-    die "collision: '$TITLE' already exists with prior work (out=$EX_OUT); use another title or --force-new"
+    die "collision: '$TITLE' is not reusable ($EX_OUT); use another title or --force-new"
   fi
   [ "$GRC" -eq 0 ] && { printf '%s\n' "$GUARD_OUT"; return 0; }
   : "${AGENT:=build}"
@@ -109,22 +144,50 @@ sub_sessions() {
   # -> "[01]Vermithrax"), which is exactly what this view must show.
   # The fetch stays outside the pipeline: with curl down, the pipe's rc was
   # awk's and an empty inventory read as "no sessions".
-  RESP=$(api_get_all_pages /api/session) || die "GET /api/session failed; cannot list the inventory"
+  RESP=$(project_sessions_json) || die "GET /api/session failed; cannot list the inventory"
   [ -n "$RESP" ] || die "GET /api/session returned an empty response"
+  # ONE awk pass (a per-record scan; a subshell per field per record cost ~35ms
+  # per session, which is a real regression on an inventory view).
+  # The offset formula is the ONE of json_get_field (os/_common.sh): the value
+  # starts at the key prefix and is read to its natural end. The offsets are
+  # DERIVED from the key, never hardcoded -- a typo can no longer shift a
+  # field by one character or one digit, which is exactly how the msgID and
+  # the millisecond timestamps got truncated in wait-idle.
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v d="$PROJ_DIR" \
-      'match($0,/"directory":"[^"]+"/){dd=substr($0,RSTART+13,RLENGTH-14)}
-       {if(dd!=d)next}
-       match($0,/"id":"ses_[^"]+"/){id=substr($0,RSTART+6,RLENGTH-7)}
-       match($0,/"title":"[^"]+"/){tt=substr($0,RSTART+9,RLENGTH-10)}
-       match($0,/"output":[0-9]+/){o=substr($0,RSTART+9,RLENGTH-9)}
-       {printf "%s out=%-6s %s\n", id, (o==""?0:o), tt}'
+    awk -v d="$(printf '%s' "$PROJ_DIR" | sed 's/\\/\\\\/g')" '
+    function field(s, key,   k, p, v, q, j, e, n) {
+      k = "\"" key "\""
+      p = index(s, k)
+      if (!p) return ""
+      p += length(k)
+      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
+      if (substr(s, p, 1) != ":") return ""
+      p++
+      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
+      v = substr(s, p)
+      if (substr(v, 1, 1) == "\"") {
+        q = substr(v, 2); j = index(q, "\"")
+        return (j > 0 ? substr(q, 1, j - 1) : q)
+      }
+      e = 1
+      while (e <= length(v) && substr(v, e, 1) !~ /[,}\]]/) e++
+      n = substr(v, 1, e - 1)
+      gsub(/[^0-9].*$/, "", n)
+      return n
+    }
+    { dd = field($0, "directory"); if (dd != d) next
+      printf "%s out=%-6s %s\n", field($0, "id"), field($0, "output"), field($0, "title") }'
 }
 
 sub_attach_tabs() {
   SID=""; TUI_CWD=""; TITLE=""
   parse_kv "$@"
   [ -n "$SID" ] || { printf '%s\n' '--session required' >&2; exit 2; }
+ #: verify the session exists BEFORE the merge. A typo'd SID used to
+  # write a ghost tab and still report ok (the readback proves the JSON write,
+  # not the session). Fail-closed: tabs.json untouched, no phantom entry.
+  opencode api GET "/api/session/$SID" >/dev/null 2>&1 \
+    || { printf 'ERROR: attach-tabs: session %s not found; no tab written\n' "$SID" >&2; exit 2; }
   # Same resolution as init-run (DRY): preflight cache, re-probing if the
   # requested pin is not the cached one. Before, attach-tabs reimplemented the
   # version comparison, drifted out of sync with init-run and wrote tabs.json
@@ -168,8 +231,10 @@ sub_watch() {
   SID=""; ARTIFACT=""; DEADLINE=""; INTERVAL=""
   parse_kv "$@"
   [ -n "$SID" ] && [ -n "$ARTIFACT" ] || { printf '%s\n' '--session and --artifact required' >&2; exit 2; }
+  [ -z "$DEADLINE" ] || assert_uint --deadline "$DEADLINE"
+  [ -z "$INTERVAL" ] || assert_uint --interval "$INTERVAL"
   if cache_has endpoint; then OPENCODE_URL=$(cache_get endpoint); export OPENCODE_URL; fi
-  if cache_has auth_password; then OPENCODE_PW=$(cat "$CACHE_DIR/auth_password"); export OPENCODE_PW; fi
+  if cache_has auth_password; then OPENCODE_PW=$(cache_get auth_password); export OPENCODE_PW; fi
   # Quoted positional args: they support paths with spaces (no arrays, pure POSIX).
   set -- "$SELF_DIR/watch_run.sh" -s "$SID" -a "$ARTIFACT"
   [ -n "$DEADLINE" ] && set -- "$@" -d "$DEADLINE"
@@ -181,12 +246,42 @@ sub_wait_idle() {
   SID=""; DEADLINE=600; INTERVAL=15
   parse_kv "$@"
   [ -n "$SID" ] || { printf '%s\n' '--session required' >&2; exit 2; }
+  assert_uint --deadline "$DEADLINE"
+  assert_uint --interval "$INTERVAL"
   require_state
+ #: one existence probe BEFORE the loop. A typo'd SID used to be retried
+  # as if it were a transient API error and only gave up at --deadline (600s
+  # by default) as a misleading timeout. 404 / bad JSON / no ses_ id -> exit 5.
+  R=$(opencode api GET "/api/session/$SID" 2>/dev/null) || R=""
+  case "$R" in *'"id":"ses_'*) : ;; *) printf 'wait-idle=session-not-found session=%s\n' "$SID"; exit 5 ;; esac
   # Pool-safe: sessions are REUSED across tasks, so a time.idle inherited
   # from a previous run would cause this wait to return immediately with stale
   # values. send-prompt caches the dispatch timestamp per session; if it
   # exists, only an idle timestamp NEWER than that mark counts as done.
-  SINCE=$(cache_get "dispatch_$SID" 2>/dev/null)
+ # NOT silenced: cache_get reports a symlinked key (CWE-59) on stderr,
+  # and hiding it made the dispatch mark silently empty -> wait-idle accepted
+  # an inherited (stale) time.idle.
+  SINCE=$(cache_get "dispatch_$SID")
+  # F2: a session that NEVER received a task is trivially idle - do not poll
+  # it to the deadline (600s) or downplay it as "stuck ... reassign". The
+  # state comes from the SAME session_state helper as pool_list (F1, one
+ # derivation); above already distinguished "does not exist" (exit 5)
+  # from "never used" (exit 0 here). A dispatch mark (SINCE) disables the
+  # shortcut: the prompt is in flight and the session must be waited on.
+  # All five fields come from the ONE shared getter (json_get_field): the old
+  # inline `match()/substr()` extractions used two different offset conventions
+ # and time.updated/time.created lost a digit, which made a busy
+  # session compare as "older than idle" and mis-classify it.
+  W_OUT=$(printf '%s' "$R" | json_get_field output)
+  W_OC=$(printf '%s' "$R" | json_get_field outcome)
+  [ -n "$W_OC" ] && W_OC=1 || W_OC=0
+  W_IDLE=$(printf '%s' "$R" | json_get_field idle)
+  W_UPD=$(printf '%s' "$R" | json_get_field updated)
+  W_CRE=$(printf '%s' "$R" | json_get_field created)
+  if [ -z "$SINCE" ] && [ "$(session_state "${W_OUT:-0}" "${W_IDLE:-0}" "${W_UPD:-0}" "${W_CRE:-0}" "${W_OC:-0}")" = "empty" ]; then
+    printf 'wait-idle=ok session=%s state=empty (never received a task; nothing to wait for)\n' "$SID"
+    exit 0
+  fi
   # Stuck detection: a worker that hangs (e.g. empty completion in the Glacielle
   # lineage) does NOT go idle and does NOT advance time.updated. Turning that
   # hang into a detectable state lets the orchestrator reassign (previously it
@@ -197,11 +292,15 @@ sub_wait_idle() {
     now=$(date +%s)
     [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
     R=$(opencode api GET "/api/session/$SID" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
-    IDLE=$(printf '%s' "$R" | awk 'match($0,/"idle":[0-9]+/){print substr($0,RSTART+7,RLENGTH-7); exit}')
-    UPD=$(printf '%s' "$R" | awk 'match($0,/"updated":[0-9]+/){print substr($0,RSTART+11,RLENGTH-12); exit}')
+    IDLE=$(printf '%s' "$R" | json_get_field idle)
+    UPD=$(printf '%s' "$R" | json_get_field updated)
     if [ -n "$SINCE" ]; then
       # pool-safe: el idle debe ser posterior al despacho de ESTA tarea
-      [ -n "$IDLE" ] && [ "$IDLE" -gt "$SINCE" ] && break
+      # C-13: >= not > — both stamps are second-granular (date +%s + "000"), so a
+      # worker idle in the SAME second as the dispatch would otherwise poll to a
+      # spurious timeout (rc 3). Trade-off: a stale idle within that same second
+      # is accepted; the window is 1s vs. a guaranteed spurious timeout.
+      [ -n "$IDLE" ] && [ "$IDLE" -ge "$SINCE" ] && break
     else
       [ -n "$IDLE" ] && break
     fi
@@ -218,7 +317,7 @@ sub_wait_idle() {
     fi
     sleep "$INTERVAL"
   done
-  OUTCOME=$(printf '%s' "$R" | awk -F'"outcome":"' 'NF>1{split($2,a,"\"");print a[1]; exit}')
+  OUTCOME=$(printf '%s' "$R" | json_get_field outcome)
   printf 'wait-idle=ok session=%s idle=%s outcome=%s\n' "$SID" "${IDLE:-none}" "${OUTCOME:-none}"
 }
 
@@ -232,9 +331,17 @@ sub_send_prompt() {
   # model accepts the prompt, infers nothing (0 tokens) and ends in
   # outcome=failed with no visible error. Verified BEFORE sending, with the
   # reason stated.
-  SINFO=$(opencode api GET "/api/session/$SID" 2>/dev/null)
-  SESS_M=$(printf '%s' "$SINFO" | tr -d '\n' | sed 's/.*"model":{"id":"\([^"]*\)".*/\1/')
-  if [ -z "$SESS_M" ] || [ "$SESS_M" = "$SINFO" ]; then
+  SINFO=$(opencode api GET "/api/session/$SID" 2>/dev/null) \
+    || die "GET /api/session/$SID failed (transport); the session model could not be read"
+  # Nested field through the ONE shared getter: model -> id. The old sed
+  # pattern could not tell "no model" apart from "model present but empty",
+  # and its sentinel comparison ($SESS_M = $SINFO) only held for one exact
+  # JSON shape.
+  SESS_M=$(printf '%s' "$SINFO" | json_get_field model)
+  case "$SESS_M" in
+    '{'*|'['*) SESS_M=$(printf '%s' "$SESS_M" | json_get_field id) ;;
+  esac
+  if [ -z "$SESS_M" ]; then
     printf 'ERROR: session %s has no resolved model (empty model.id).\n' "$SID" >&2
     printf 'Cause: it was created without the model_default cache key, or its agent does not resolve a model.\n' >&2
     printf 'Next: recreate it with an explicit model: create-worker --title "<T>" --model <id>@<prov> --force-new\n' >&2
@@ -245,13 +352,20 @@ sub_send_prompt() {
   # no instructions and no error signal. Fail-closed.
   [ -n "$TEXT" ] || die "prompt file empty or unreadable: $PROMPT_FILE"
   R=$(opencode api POST "/api/session/$SID/prompt" -d '{"text":"'"$TEXT"'"}' 2>/dev/null) \
-    || die 'POST /api/session/{id}/prompt failed'
-  MID=$(printf '%s' "$R" | awk 'match($0,/"infoID":"[^"]+/){print substr($0,RSTART+10,RLENGTH-10); exit}')
+    || die 'POST /api/session/{sessionID}/prompt failed'
+  # Session.Inbox.User returns `id` (a Session.Message.ID, ^msg_). The script
+  # used to look for "infoID", which the v2 schema does not emit -- always
+  # "none" -- so the extraction was dead. Renamed label and pattern.
+  # The old inline extraction dropped the LAST character of the id (the regex
+  # had no closing quote but the length subtracted one), so the printed
+  # msgID was not a real id. The shared getter + the "msg_" prefix filter
+  # return the id verbatim and never confuse it with the session id.
+  MID=$(printf '%s' "$R" | json_get_field id msg_)
   # Cachea el timestamp de despacho: wait-idle de esta sesion solo acepta un
   # idle POSTERIOR (pool-safe; sin esto el idle heredado del run anterior
   # hacia regresar la espera de inmediato con valores viejos).
   cache_put "dispatch_$SID" "$(date +%s)000"
-  printf 'prompt=ok session=%s infoID=%s\n' "$SID" "${MID:-none}"
+  printf 'prompt=ok session=%s msgID=%s\n' "$SID" "${MID:-none}"
 }
 
 # resolve_gate: leaves in GATE / GATE_REASON / GATE_CWD the tabs-gate
@@ -274,11 +388,12 @@ resolve_gate() {
     GATE=$(printf '%s\n' "$PROBE" | sed -n 's/^gate=//p')
     GATE_REASON=$(printf '%s\n' "$PROBE" | sed -n 's/^gate_reason=//p')
     GATE_CWD=$(printf '%s\n' "$PROBE" | sed -n 's/^tui_cwd=//p')
-    # Refresh the cache so attach-tabs sees the same decision (DRY).
-    printf '%s\n' "$GATE"        > "$CACHE_DIR/tabs_gate"
-    printf '%s\n' "$GATE_CWD"    > "$CACHE_DIR/tabs_cwd"
-    printf '%s\n' "$GATE_REASON" > "$CACHE_DIR/tabs_reason"
-    printf '%s\n' "$WANT_PIN"    > "$CACHE_DIR/tui_version_pin"
+ # Refresh the cache so attach-tabs sees the same decision (DRY).:
+    # via cache_put, never a raw `>` (a symlinked key must not be followed).
+    cache_put tabs_gate "$GATE"
+    cache_put tabs_cwd "$GATE_CWD"
+    cache_put tabs_reason "$GATE_REASON"
+    cache_put tui_version_pin "$WANT_PIN"
     return 0
   fi
   GATE=$(cache_get tabs_gate | sed 's/^gate=//')
@@ -296,11 +411,18 @@ sub_init_run() {
   # counter, so [01] is never repeated between calls.
   #   --count N             -> N workers, names from the dragon catalog
   #   --worker "Name"       -> explicit names (repeatable / commas)
-  # A RUNNING worker (no time.idle) is a collision: it is not overwritten (fail-closed).
-  MAXORD=$(pool_max_ordinal)
+  # A RUNNING worker (no time.idle but with activity: out>0, an outcome, or
+  # time.updated > time.created) is a collision: not overwritten (fail-closed).
+  # A never-used worker (F1 state `empty`: no output, no idle) is reusable.
+  # ONE fetch of the pool: it is BOTH the dedup source and the ordinal source.
+  # Before, MAXORD came from a separate unguarded pool_max_ordinal call whose
+  # failure read as "pool empty" (max=0), so the next worker took ordinal 01
+  # even when [01] was already deployed -> two workers with the same [NN].
+  # Fail-closed BEFORE anything is created.
+  POOL=$(pool_list) || die "could not query the worker pool; fail-closed"
+  MAXORD=$(pool_max_ordinal "$POOL")
   if [ -n "$COUNT" ]; then
-    case "$COUNT" in ''|*[!0-9]*) die "--count requires an integer" ;; esac
-    [ "$COUNT" -ge 1 ] || die "--count must be >= 1"
+    assert_uint --count "$COUNT"
     i=0
     while [ "$i" -lt "$COUNT" ]; do
       i=$((i + 1))
@@ -354,16 +476,30 @@ sub_init_run() {
     # Install the router prompt on the freshly-created orchestrator so the LLM
     # knows it must dispatch every task to a worker (never implement directly).
     # DRY: one canonical router prompt under scripts/prompt-templates/.
-    if [ "${NO_ROUTER:-0}" -ne 1 ]; then
-      ROUTER_FILE="${ROUTER_PROMPT:-$SELF_DIR/prompt-templates/router-orchestrator.md}"
-      if [ -f "$ROUTER_FILE" ]; then
-        printf 'router: installing orchestrator instruction (%s, %s bytes)...\n' \
-          "$ROUTER_FILE" "$(wc -c < "$ROUTER_FILE" | tr -d ' ')"
-        sub_send_prompt --session "$RID" --prompt-file "$ROUTER_FILE" || true
-      else
-        printf 'router: skipped (no router prompt at %s; use --router-prompt PATH or copy SKILL/scripts/prompt-templates/router-orchestrator.md)\n' "$ROUTER_FILE"
-      fi
-    fi
+    # A REUSED root is left alone: it already has the instruction, and sending
+    # it again would post a message into the operator's live session.
+    case "$ROOT_OUT" in
+      *root_reused=1*)
+        printf 'router: skipped (the [00] root already exists; it is reused, not re-instructed)\n'
+        ;;
+      *)
+        if [ "${NO_ROUTER:-0}" -ne 1 ]; then
+          ROUTER_FILE="${ROUTER_PROMPT:-$SELF_DIR/prompt-templates/router-orchestrator.md}"
+          if [ -f "$ROUTER_FILE" ]; then
+            printf 'router: installing orchestrator instruction (%s, %s bytes)...\n' \
+              "$ROUTER_FILE" "$(wc -c < "$ROUTER_FILE" | tr -d ' ')"
+            # The router instruction IS what makes the orchestrator dispatch every
+            # task instead of implementing it. `|| true` swallowed the failure and
+            # the run continued with an orchestrator that never learned the rule,
+            # so the failure is now fatal (fail-closed, same as ensure_root above).
+            sub_send_prompt --session "$RID" --prompt-file "$ROUTER_FILE" \
+              || die "could not install the router instruction on the orchestrator ($RID); aborting the run"
+          else
+            printf 'router: skipped (no router prompt at %s; use --router-prompt PATH or copy SKILL/scripts/prompt-templates/router-orchestrator.md)\n' "$ROUTER_FILE"
+          fi
+        fi
+        ;;
+    esac
   fi
   FAILED=0; REUSED=0; CREATED=0
   # Line-driven, not word-split: a title is "[NN] Name" and the space is part
@@ -374,7 +510,8 @@ sub_init_run() {
   # `die`/`exit` only killed the subshell, the parent carried on and ended up
   # printing "done". The heredoc keeps the loop in the current shell, so exit
   # truly propagates.
-  POOL=$(pool_list) || die "could not query the worker pool; fail-closed"
+  # (POOL is fetched once, above MAXORD: dedup and ordinals must come from the
+  # SAME snapshot.)
   # INCREMENTAL SCALING: if the pool already has that NAME it is REUSED (idle)
   # or the run aborts (running, no idle = in progress, not overwritten); only
   # if it does not exist is it created, with the pool's next free ordinal.
@@ -390,12 +527,16 @@ sub_init_run() {
       P_ORD=$(printf '%s' "$HIT" | cut -f1)
       P_ST=$(printf '%s' "$HIT" | cut -f2)
       ID=$(printf '%s' "$HIT" | cut -f3)
+      # $t already carries the "[NN] " prefix from worker_list, so
+      # "[%02d] %s" printed the ordinal twice ("[01] [01] Vermithrax"). Show
+      # the POOL's authoritative ordinal (P_ORD) with the name alone.
+      P_NAME=$(printf '%s' "$t" | sed 's/^\[[0-9]*\][ \t]*//')
       if [ -z "$ID" ]; then
-        printf 'ERROR: [%02d] %s exists in the pool without a usable sessionID\n' "$P_ORD" "$t" >&2
+        printf 'ERROR: [%02d] %s exists in the pool without a usable sessionID\n' "$P_ORD" "$P_NAME" >&2
         FAILED=$((FAILED + 1)); continue
       fi
-      if [ "$P_ST" != "idle" ]; then
-        printf 'ERROR: [%02d] %s is RUNNING (no idle); it is not overwritten. Wait for wait-idle before reassigning work to it.\n' "$P_ORD" "$t" >&2
+      if [ "$P_ST" != "idle" ] && [ "$P_ST" != "empty" ]; then
+        printf 'ERROR: [%02d] %s is %s; it is not overwritten. Wait for wait-idle before reassigning work to it.\n' "$P_ORD" "$P_NAME" "$P_ST" >&2
         FAILED=$((FAILED + 1)); continue
       fi
       printf 'reused  %s -> %s\n' "$t" "$ID"
@@ -449,7 +590,7 @@ sub_pool() {
   printf '%-8s %-30s %-9s\n' ORDINAL NAME STATE
   # `sprintf("%02d", $1)` keeps the 2-digit ordinal (cosmetic: `[00]` instead of `[0]`).
   printf '%s\n' "$POOL" | awk -F'\t' '{ o=sprintf("%02d", $1); printf "%-8s %-30s %-9s\n", "["o"]", $2, $3 }'
-  printf 'next free ordinal: [%02d]\n' $(( $(pool_max_ordinal) + 1 ))
+  printf 'next free ordinal: [%02d]\n' $(( $(pool_max_ordinal "$POOL") + 1 ))
 }
 
 sub_tabs() {
@@ -463,7 +604,11 @@ sub_tabs() {
   _probe=$(sh "$SELF_DIR/os/tui-detect.sh" "$PROJ_DIR" "${OPENCODE_TUI_PINNED_VERSION:-2}" 2>/dev/null)
   printf '%s\n' "$_probe"
   if [ -n "$TUI_CWD" ]; then
-    _real=$(printf '%s\n' "$_probe" | sed -n 's/^tui_cwd_any=//p')
+    # The SAME field the gate uses (tui_cwd = the cwd of the TUI that matches
+    # the project, with tui_cwd_any as fallback). It used to compare against
+    # tui_cwd_any, so with more than one TUI running `tabs` reported MISMATCH
+    # for a cwd that `attach-tabs` accepted: two gates for one decision.
+    _real=$(printf '%s\n' "$_probe" | sed -n 's/^tui_cwd=//p')
     if [ "$TUI_CWD" = "$_real" ]; then
       printf 'tui_cwd_request=match\n'
     else
@@ -494,11 +639,26 @@ sub_verify_daughters() {
   # opencode api resolves server+auth and wants a PATH (with query), not a full URL.
   command -v opencode >/dev/null 2>&1 || die 'opencode CLI required for verify-daughters (not in PATH); run preflight and use the curl fallback with the auth recipe if applicable'
   command -v python3 >/dev/null 2>&1 || die 'python3 required for verify-daughters (JSON response parser)'
-  RESP=$(opencode api GET "/api/session?parentID=$WORKER_ID" 2>/dev/null) \
+  # F4: distinguish "worker id not found" from "worker has no children yet".
+  # The empty-children baseline is legitimate for a worker that has not
+  # spawned subagents yet, and the old message asserted a typo in that case.
+  # Both cases stay exit 2 (fail-closed: a mistyped id NEVER reads as
+  # success - round-2 evidence preserved; see references/failure-matrix.md).
+  # The CONTENT decides, not the exit code: the CLI returns a non-zero rc for
+  # BOTH a 404 and an unreachable API, so the rc alone cannot tell them apart.
+  # The rc is still not ignored: it is folded into the message.
+  WINFO=$(opencode api GET "/api/session/$WORKER_ID" 2>/dev/null) || WINFO=""
+  case "$WINFO" in *'"id":"ses_'*) : ;;
+    *) printf 'ERROR: verify-daughters: worker id not found (or the API is unreachable): %s; nothing was listed. Fail-closed.\n' "$WORKER_ID" >&2; exit 2 ;;
+  esac
+  # PAGINATED: a single page holds 50 sessions, so a worker with more
+  # children than that was silently under-verified and R14 reported
+  # "verified_ok=N failures=0" over an INCOMPLETE list.
+  RESP=$(api_get_all_pages "/api/session?parentID=$WORKER_ID") \
     || die "GET /api/session?parentID=$WORKER_ID failed"
   printf '%s\n' "$RESP" | EXPECTED_PARENT="$EXPECTED_PARENT" PROJ_DIR="$PROJ_DIR" python3 -c '
 import json, sys, os
-d = json.load(sys.stdin).get("data", [])
+d = json.load(sys.stdin, strict=False).get("data", [])
 wp = os.environ["EXPECTED_PARENT"]; locx = os.environ["PROJ_DIR"]
 ok = fail = 0
 for s in d:
@@ -510,7 +670,7 @@ for s in d:
         (s.get("id") or "")[:18], pid, loc == locx))
 print("verified_ok=%d failures=%d" % (ok, fail))
 if not d:
-    print("ERROR: the query returned no children; a mistyped worker-id would read as success. Fail-closed.")
+    print("NOTE: worker has no children yet (id verified above); nothing to verify. Fail-closed exit 2: it cannot be marked verified.")
     sys.exit(2)
 sys.exit(0 if fail == 0 else 2)'
 }
@@ -518,7 +678,7 @@ sys.exit(0 if fail == 0 else 2)'
 # delete-session: R7. The active /openapi.json (2.0.29 observed
 # 2026-10-14; first verified at v2.0.22, gate is by major so the
 # earlier 2.0.21 / 2.0.22 flap is irrelevant) publishes DELETE
-# /api/session/{id}. Gate: enumerates children with GET
+# /api/session/{sessionID}. Gate: enumerates children with GET
 # ?parentID=; aborts if there are any unless --force is used; without --yes it
 # requires typing "yes" (fail-closed for non-interactive use).
 #
@@ -535,10 +695,14 @@ sub_delete_session() {
   require_state
   command -v opencode >/dev/null 2>&1 || die 'opencode CLI required (enumerate children per R7)'
   command -v python3 >/dev/null 2>&1 || die 'python3 required to enumerate children (R7): install python3 and retry'
-  CHILDREN=$(opencode api GET "/api/session?parentID=$SID" 2>/dev/null \
-    | python3 -c 'import json,sys
+  # PAGINATED: the R7 gate counts the children, so a truncated page would
+  # under-report them (the gate itself still holds, but the number printed
+  # to the operator would be wrong).
+  _CHILD_JSON=$(api_get_all_pages "/api/session?parentID=$SID") \
+    || die "GET /api/session?parentID=$SID failed; the R7 gate needs the real child count"
+  CHILDREN=$(printf '%s' "$_CHILD_JSON" | python3 -c 'import json,sys
 try:
-    print(len(json.load(sys.stdin).get("data",[])))
+    print(len(json.load(sys.stdin, strict=False).get("data",[])))
 except Exception:
     print("?")' 2>/dev/null)
   if [ -z "$CHILDREN" ] || [ "$CHILDREN" = "?" ]; then
@@ -547,24 +711,35 @@ except Exception:
     exit 2
   fi
   printf 'delete-session: target=%s children=%s\n' "$SID" "$CHILDREN" >&2
-  if [ "$FORCE" -ne 1 ]; then
-    if [ "$CHILDREN" != "0" ]; then
-      printf 'ERROR: %s has %s children; R7 -> use --force to skip the check (you assume cascade delete)\n' "$SID" "$CHILDREN" >&2
-      exit 2
-    fi
-    if [ "$YES" -ne 1 ]; then
-      printf 'DELETE %s (children=%s)? Type "yes" to continue: ' "$SID" "$CHILDREN" >&2
-      if ! IFS= read -r ans; then printf '\naborted (no input)\n' >&2; exit 2; fi
-      [ "$ans" = "yes" ] || { printf 'aborted\n' >&2; exit 2; }
-    fi
+  # --force skips ONLY the children check, exactly as documented (SKILL.md row
+  # 8.1). It must NOT skip the confirmation: a destructive R7 delete always
+  # needs an explicit approval (--yes or the typed "yes"). Before, the whole
+  # block was inside `if [ "$FORCE" -ne 1 ]`, so `--force` alone deleted the
+  # session with no prompt at all.
+  if [ "$FORCE" -ne 1 ] && [ "$CHILDREN" != "0" ]; then
+    printf 'ERROR: %s has %s children; R7 -> use --force to skip the check (you assume cascade delete)\n' "$SID" "$CHILDREN" >&2
+    exit 2
+  fi
+  if [ "$YES" -ne 1 ]; then
+    printf 'DELETE %s (children=%s)? Type "yes" to continue: ' "$SID" "$CHILDREN" >&2
+    if ! IFS= read -r ans; then printf '\naborted (no input)\n' >&2; exit 2; fi
+    [ "$ans" = "yes" ] || { printf 'aborted\n' >&2; exit 2; }
   fi
   opencode api DELETE "/api/session/$SID" >/dev/null 2>&1 \
     || die "DELETE /api/session/$SID failed"
+  # C-12: the cache keys pointing at this SID (worker_*, root_session,
+  # dispatch_*) are purged WITH the session, so the skill cannot later reuse a
+  # dead session id. Same helper as clean (DRY).
+  cache_purge_sid "$SID"
+  # tabs.json DRY: same helper as sub_clean (was missing — left orphan tabs).
+  TABS_REMOVED=$(tabs_prune_ids "$SID")
+  [ -n "$TABS_REMOVED" ] && [ "$TABS_REMOVED" -gt 0 ] 2>/dev/null \
+    && printf 'delete-session: removed %s tab(s) from tabs.json\n' "$TABS_REMOVED" >&2
   printf 'deleted=%s children_was=%s\n' "$SID" "$CHILDREN"
 }
 
 # clean: identify + delete every session the orchestrator opened (R7).
-# Usage: orchestrate.sh clean [--orchestrator SID] [--yes] [--force] [--dry-run]
+# Usage: orchestrate.sh clean [--orchestrator SID] [--yes] [--dry-run]
 #
 # Identification algorithm (the "conversation history" part):
 #   1. The orchestrator: auto-detected as the most recent [00]-titled
@@ -575,27 +750,71 @@ except Exception:
 #      orchestrator's naming convention), and their transitive subagents.
 #   3. Exclude: the orchestrator itself; any session in another project.
 # After deletion, the corresponding tab entries in tabs.json are removed
-# (under fcntl lock; portable across darwin/linux/git-bash on python3).
+# (under the shared tabs.json lock; portable across darwin/linux/WSL/git-bash).
+# tabs_prune_ids SID_LIST -> prints N (count of tabs pruned from tabs.json).
+# Single source of truth for tabs.json pruning (DRY; called by clean and
+# delete-session). The tabs.json lock is the shared lock_exec (no second
+# locking strategy anywhere in the skill): resolve the path in the shell via
+# tabs_json_path (one source of truth, defined in os/_common.sh) and run the
+# prune under lock_exec. Any reader of tabs.json sees either the previous
+# shape or the complete new shape -- the prune is atomic w.r.t. concurrent
+# merges (which themselves go through lock_exec on the same file).
+tabs_prune_ids() {
+  # Same file the merge writes (DRY): tabs_target_path is the ONE resolver
+  # (ORCHESTRATE_TABS_JSON wins, else tabs_json_path) shared with the four
+  # merge adapters, so a redirected tabs.json is pruned where it lives. This
+  # was a 5th copy of the same 6-line block, and the merge python carried a
+  # 6th resolver with different rules.
+  _tj=$(tabs_target_path 2>/dev/null) || { printf '0\n'; return 0; }
+  [ -f "$_tj" ] || { printf '0\n'; return 0; }
+  DELETED_IDS="$*"
+  export DELETED_IDS
+  lock_exec "$_tj" "${ORCHESTRATE_TABS_LOCK_TIMEOUT:-5}" \
+    python3 -c '
+import json, os, sys
+deleted = set(os.environ.get("DELETED_IDS","").split())
+if not deleted or "" in deleted: print(0); raise SystemExit
+p = sys.argv[1]
+with open(p, "r+") as f:
+    try: d = json.load(f, strict=False)
+    except Exception: d = {"global":{"tabs":[]}, "cwd":{}}
+    removed = 0
+    for cwd_key in list(d.get("cwd", {}).keys()):
+        tabs = d["cwd"][cwd_key].get("tabs", [])
+        new = [t for t in tabs if t.get("sessionID") not in deleted]
+        removed += len(tabs) - len(new)
+        d["cwd"][cwd_key]["tabs"] = new
+    if removed:
+        f.seek(0); f.truncate()
+        json.dump(d, f, indent=2)
+    print(removed)
+' "$_tj"
+}
+
 sub_clean() {
-  ORCH_SID=""; YES=0; FORCE=0; DRY=0
+  ORCH_SID=""; YES=0; DRY=0
   # Local flag parsing (parse_kv in _common.sh doesn't know these flags;
   # adding them there would leak clean-specific args into a shared lib).
   while [ $# -gt 0 ]; do
     case "$1" in
-      --orchestrator) ORCH_SID="${2:-}"; shift 2 ;;
+      --orchestrator) assert_value --orchestrator "$#"; ORCH_SID="${2:-}"; shift 2 ;;
       --orchestrator=*) ORCH_SID="${1#--orchestrator=}"; shift ;;
       --yes) YES=1; shift ;;
-      --force) FORCE=1; shift ;;
       --dry-run) DRY=1; shift ;;
       --) shift; break ;;
       *) printf 'clean: unknown flag: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
   if [ -z "$ORCH_SID" ]; then
-    ORCH_SID=$(opencode api GET /api/session 2>/dev/null | python3 -c '
+    # PAGINATED + checked: a single page holds 50 sessions, so the [00] root
+    # could be off-page and clean died with "no [00] orchestrator"; and an
+    # unchecked fetch reported a transport failure as the same message.
+    _orch_all=$(project_sessions_json) \
+      || die "GET /api/session failed; cannot find the [00] orchestrator"
+    ORCH_SID=$(printf '%s' "$_orch_all" | python3 -c '
 import json, sys, re
 proj = "'"$PROJ_DIR"'"
-ss = json.load(sys.stdin).get("data", [])
+ss = json.load(sys.stdin, strict=False).get("data", [])
 cands = [s for s in ss if s.get("location",{}).get("directory","") == proj
          and re.match(r"^\[00\]", s.get("title",""))]
 cands.sort(key=lambda s: s.get("time",{}).get("created", 0), reverse=True)
@@ -604,23 +823,69 @@ if cands: print(cands[0]["id"])
   fi
   [ -n "$ORCH_SID" ] || die 'clean: no [00] orchestrator in this project; pass --orchestrator SID'
   case "$ORCH_SID" in ses_*) : ;; *) die 'clean: --orchestrator must have the ses_ prefix' ;; esac
+ # (concurrency-probe HIGH): validate ORCH_SID belongs to this project
+  # BEFORE any destructive enumeration. A bogus --orchestrator used to
+  # pass through `seen = {orch}` (which excluded only the bogus SID) and
+  # then sweep the real [00] + workers. Fail-closed with a clear message.
+  if ! opencode api GET "/api/session/$ORCH_SID" 2>/dev/null | grep -q "\"directory\":\"$PROJ_DIR\""; then
+ die "clean: --orchestrator $ORCH_SID is not in this project (location != $PROJ_DIR); refusing to sweep (data-loss class)"
+  fi
 
   # Identify orchestrator-opened sessions in this project
+ # (CWE-703): capture stderr separately so a python exception
+  # cannot masquerade as "nothing to delete" (was: empty result + rc 0 +
+  # operator believes cleanup succeeded). Fail-closed on python failure,
+  # consistent with sub_delete_session's R7 contract.
+  # No predictable /tmp fallback: a planted symlink at a known name would
+  # redirect the python's stderr into the attacker's file. Fail closed.
+  _clean_err=$(mktemp 2>/dev/null) || die "clean: cannot create a temporary file for the enumeration errors"
   TO_DELETE=$(PROJ_DIR="$PROJ_DIR" ORCH_SID="$ORCH_SID" python3 -c '
 import json, os, re, subprocess
 orch = os.environ["ORCH_SID"]; proj = os.environ["PROJ_DIR"]
 seen = {orch}; stack = []
+_pages = {}
 def get_all(path):
-    """Fetch all pages of a paginated endpoint (50/page, base64 cursor)."""
-    out = []; cursor = None
-    while True:
-        url = path + (f"?cursor={cursor}" if cursor else "")
+    """Fetch all pages of a paginated endpoint (50/page, base64 cursor).
+
+    Same contract as the shell helper api_get_all_pages (DRY): the separator is
+    "?" or "&" depending on the path, limit=200, a stable-cursor guard, a
+    30-iteration cap and ONE retry of the same url on a malformed page.
+
+    Two defects fixed here:
+    * the url was built as path + "?limit=200" ALWAYS, so a path that already
+      had a query string ("/api/session?parentID=X") became
+      "...?parentID=X?limit=200": the second "?" landed INSIDE the parentID
+      value, the filter matched nothing and the child enumeration silently
+      returned an empty list (no children, no topological order).
+    * a malformed page did `break`, so a PARTIAL list was returned and the
+      caller treated it as the complete one (B-pagination-silent class). It
+ now raises, and the shell turns that into the fail-closed die.
+
+    Results are memoised per path: the same list was fetched up to three
+    times (children, children map, session info)."""
+    if path in _pages: return _pages[path]
+    out = []; cursor = None; prev = None; i = 0
+    while i < 30:
+        i += 1
+        if cursor is not None and cursor == prev: break
+        prev = cursor
+        sep = "&" if "?" in path else "?"
+        url = path + sep + "limit=200" + (("&cursor=%s" % cursor) if cursor else "")
         r = subprocess.run(["opencode","api","GET",url], capture_output=True, text=True)
-        try: d = json.loads(r.stdout)
-        except Exception: break
+        try:
+            d = json.loads(r.stdout, strict=False)
+        except Exception:
+            # One retry of the SAME url (the serve occasionally emits a
+            # malformed page); a second failure is fatal, not "end of list".
+            r = subprocess.run(["opencode","api","GET",url], capture_output=True, text=True)
+            try:
+                d = json.loads(r.stdout, strict=False)
+            except Exception as exc:
+                raise SystemExit("clean: malformed page from %s (%s)" % (url, exc))
         out.extend(d.get("data", []) or [])
-        cursor = (d.get("cursor") or {}).get("next")
+        cursor = (d.get("cursor") or {}).get("next") or None
         if not cursor: break
+    _pages[path] = out
     return out
 # 1. Direct children of the orchestrator
 for c in get_all(f"/api/session?parentID={orch}"):
@@ -670,8 +935,13 @@ session_info = {s["id"]: s for s in get_all("/api/session")}
 for sid in order:
     if sid == orch: continue
     info = session_info.get(sid, {})
-    print(sid + "|" + info.get("title",""))
-' 2>/dev/null)
+    print(sid + "|" + (info.get("title") or ""))
+' 2>"$_clean_err") || {
+    cat "$_clean_err" >&2
+    rm -f "$_clean_err"
+ die 'clean: python enumeration failed; refusing to clean (fail-closed)'
+  }
+  rm -f "$_clean_err"
 
   N=$(printf '%s\n' "$TO_DELETE" | grep -c '^ses_')
   if [ "$N" -eq 0 ]; then
@@ -706,7 +976,7 @@ for sid in order:
   # topological order above: by the time we reach a session, all of its
   # children in the set are already gone, so the per-session child
   # enumeration is not needed for cascade safety.
-  TMP=$(mktemp)
+  TMP=$(mktemp) || die "clean: cannot create the temporary deletion log"
   printf '%s\n' "$TO_DELETE" | while IFS='|' read -r sid title; do
     [ -n "$sid" ] || continue
     if opencode api DELETE "/api/session/$sid" >/dev/null 2>&1; then
@@ -719,7 +989,14 @@ for sid in order:
   done
   OK=$(grep -c '^ok ' "$TMP" 2>/dev/null; true)
   FAIL=$(grep -c '^fail ' "$TMP" 2>/dev/null; true)
-  rm -f "$TMP"
+  # FAIL-CLOSED: the counts must add up to the plan. Before, an unwritable or
+  # missing $TMP made BOTH counts 0, so clean reported SUCCESS having deleted
+  # nothing, and the ok-list was silently empty -> the cache purge and the
+  # tabs prune were skipped while the command claimed it was done.
+  if [ $((OK + FAIL)) -ne "$N" ]; then
+    printf 'ERROR: clean: the deletion log is incomplete (%s ok + %s fail != %s planned); the tabs prune and the cache purge are SKIPPED. Fail-closed.\n' "$OK" "$FAIL" "$N" >&2
+    die "clean: the deletion log does not match the plan; nothing else was touched"
+  fi
   [ "$FAIL" -gt 0 ] && printf 'clean: %s delete(s) failed; check logs\n' "$FAIL" >&2
 
   # Clean tabs.json: remove entries whose sessionID was ACTUALLY deleted
@@ -727,39 +1004,12 @@ for sid in order:
   # tabs.json consistent with the live state: a session that failed to
   # delete keeps its tab entry until the user retries or cleans manually.
   DELETED_IDS=$(awk '$1 == "ok" {print $2}' "$TMP" 2>/dev/null; true | tr '\n' ' ')
+  rm -f "$TMP"
   if [ -n "$DELETED_IDS" ]; then
-    TABS_REMOVED=$(PROJ_DIR="$PROJ_DIR" DELETED_IDS="$DELETED_IDS" python3 -c '
-import json, os, fcntl, subprocess
-proj = os.environ["PROJ_DIR"]
-deleted = set(os.environ.get("DELETED_IDS","").split())
-if not deleted or "" in deleted: print(0); raise SystemExit
-# tabs_json_path via $SELF_DIR (DRY: no hardcoded ./SKILL/scripts/...).
-# $SELF_DIR is set by the parent orchestrate.sh as the absolute path of
-# SKILL/scripts, so this works regardless of where the skill lives.
-proc = subprocess.run(["sh","-c",'. "$0/scripts/os/_common.sh" >/dev/null 2>&1; tabs_json_path', os.environ.get("SELF_DIR","./SKILL/scripts")],
-                     capture_output=True, text=True, cwd=proj)
-p = proc.stdout.strip()
-if not p or not p.startswith("/"): print(0); raise SystemExit
-try: f = open(p, "r+")
-except FileNotFoundError: print(0); raise SystemExit
-removed = 0
-try:
-    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-    try: d = json.load(f)
-    except Exception: d = {"global":{"tabs":[]}, "cwd":{}}
-    for cwd_key in list(d.get("cwd", {}).keys()):
-        tabs = d["cwd"][cwd_key].get("tabs", [])
-        new = [t for t in tabs if t.get("sessionID") not in deleted]
-        removed += len(tabs) - len(new)
-        d["cwd"][cwd_key]["tabs"] = new
-    if removed:
-        f.seek(0); f.truncate()
-        json.dump(d, f, indent=2)
-finally:
-    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    f.close()
-print(removed)
-' 2>/dev/null)
+    # C-12: purge the cache pointers of the ACTUALLY deleted sessions only
+    # (same helper as delete-session; DRY).
+    for _sid in $DELETED_IDS; do cache_purge_sid "$_sid"; done
+    TABS_REMOVED=$(tabs_prune_ids "$DELETED_IDS")
     if [ -n "$TABS_REMOVED" ] && [ "$TABS_REMOVED" -gt 0 ] 2>/dev/null; then
       printf 'clean: removed %s tab(s) from tabs.json\n' "$TABS_REMOVED" >&2
     fi
@@ -778,25 +1028,63 @@ sub_dispatch() {
   parse_kv "$@"
   [ -n "$PROMPT_FILE" ] || die "dispatch: --prompt-file required"
   [ -f "$PROMPT_FILE" ] || die "dispatch: prompt file not found: $PROMPT_FILE"
+  assert_uint --deadline "$DEADLINE"
+  assert_uint --interval "$INTERVAL"
+  [ -z "$COUNT" ] || assert_uint --count "$COUNT"
   require_state
 
-  # Idle workers in the pool (column 7 = parent, empty for workers; column 3 = state).
+  # Idle OR empty workers in the pool (column 7 = parent, empty for workers;
+  # column 3 = state). F1: `empty` is a created-but-never-used session — it
+  # must be dispatchable or the first prompt can never be delivered; a
+  # genuinely `running` session (out>0 or updated>created, no time.idle) is
+  # still refused (fail-closed collision guard, semantics unchanged).
   POOL=$(pool_list) || die "dispatch: could not query worker pool"
-  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && $3 == "idle" { print $1, $5 }')
+  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && ($3 == "idle" || $3 == "empty") { print $1, $5 }')
   N_IDLE=$(printf '%s\n' "$IDLE" | grep -c .)
-  [ "$N_IDLE" -gt 0 ] || die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
+ #: --target is resolved BEFORE the idle-count gate. With the gate first,
+  # a --target naming a busy (or nonexistent) worker died with "no idle worker
+  # ... or pass --target NN" -- a hint already satisfied (it HAD been passed)
+  # that also conflated "no such ordinal" with "worker is busy". F1's truthful
+  # state reporting is preserved; the two refusals are now separate messages.
+  if [ -n "$WORKER" ]; then
+    # --target NN    -> the worker with that ordinal.
+    # --target NNsMM -> the sub-agent MM of the worker NN (the router prompt
+    #                   documents both forms).
+    # The selector compares the ordinal AND the sub-agent index. awk coerces
+    # "01s02" to the NUMBER 1, so the old `w+0` match silently selected the
+    # WORKER 01 instead of its sub-agent 02 and the prompt went to the WRONG
+    # session. (The IDLE set only contains workers, so a sub-agent target was
+    # unreachable as well.)
+    case "$WORKER" in
+      *s*) T_ORD="${WORKER%%s*}"; T_SUB="${WORKER#*s}" ;;
+      *)   T_ORD="$WORKER"; T_SUB="" ;;
+    esac
+    [ -n "$T_ORD" ] || die "dispatch: --target must be NN or NNsMM (digits only)"
+    case "$T_ORD$T_SUB" in
+      *[!0-9]*) die "dispatch: --target must be NN or NNsMM (digits only)" ;;
+    esac
+    if [ -n "$T_SUB" ]; then
+      [ "$T_SUB" -ge 1 ] 2>/dev/null || die "dispatch: --target sub-agent index must be >= 1"
+    fi
+    WST=$(printf '%s\n' "$POOL" | awk -F'\t' -v o="$T_ORD" -v sbi="$T_SUB" '$1 == (o+0) && ($7+0) == (sbi+0) { print $3; exit }')
+    [ -n "$WST" ] || die "dispatch: no worker with ordinal $WORKER in this project (run 'pool' to list the deployed workers)"
+    [ "$WST" = idle ] || [ "$WST" = empty ] || die "dispatch: worker $WORKER is $WST (only idle or empty workers can receive new prompts)"
+  fi
 
-  # Heuristic complexity -> N (only when --auto-count).
-  # Defensive under set -u: if wc/grep misbehave we fall back to "0".
-  WORDS=$(wc -w < "$PROMPT_FILE" 2>/dev/null | tr -d ' ' || printf '0')
-  WORDS=${WORDS:-0}
-  BULLETS=$(grep -cE '^[[:space:]]*[0-9]+[.)][[:space:]]|^[[:space:]]*[-*][[:space:]]' "$PROMPT_FILE" 2>/dev/null || printf '0')
-  BULLETS=${BULLETS:-0}
+  # Heuristic complexity -> N (only when --auto-count). Single tool (awk)
+  # for both counts: `wc -w || printf 0` and `grep -cE || printf 0` both
+  # race and emit "0\n0" when the count is zero, breaking the -ge tests.
+  WORDS=$(awk 'BEGIN{n=0}{n+=NF}END{print n+0}' "$PROMPT_FILE")
+  BULLETS=$(awk 'BEGIN{n=0}/^[[:space:]]*[0-9]+[.)][[:space:]]|^[[:space:]]*[-*][[:space:]]/{n++}END{print n+0}' "$PROMPT_FILE")
 
   # Decide the target list.
   if [ -n "$WORKER" ]; then
-    TARGET=$(printf '%s\n' "$IDLE" | awk -v w="$WORKER" '$1+0 == w+0')
-    [ -n "$TARGET" ] || die "dispatch: worker $WORKER is not idle (only idle workers can receive new prompts)"
+ # Validated above: it exists and is idle/empty. Selected from the
+    # POOL (not from IDLE) so a sub-agent target NNsMM is reachable: IDLE
+    # only holds the workers (column 7 empty).
+    TARGET=$(printf '%s\n' "$POOL" | awk -F'\t' -v o="$T_ORD" -v sbi="$T_SUB" '$1 == (o+0) && ($7+0) == (sbi+0) { print $1, $5; exit }')
+  elif [ "$N_IDLE" -eq 0 ]; then
+    die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
   elif [ -n "$COUNT" ]; then
     N="$COUNT"
     [ "$N" -ge 1 ] || die "--count must be >= 1"
@@ -823,8 +1111,12 @@ sub_dispatch() {
 
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    set -- "$line"
+    set -- $line
     ORD="$1"; SID="$2"
+ #: a hostile worker could craft a title like "[05] ses_TARGETID"
+    # which would set SID=ses_TARGETID and route this prompt to someone else's
+    # session. Re-validate the sessionID prefix before sending.
+    case "$SID" in ses_*) ;; *) die "dispatch: parsed SID '$SID' lacks ses_ prefix (worker title poisoning?)" ;; esac
     printf '  -> [%02d] %s sending prompt...\n' "$ORD" "$SID"
     sub_send_prompt --session "$SID" --prompt-file "$PROMPT_FILE" 2>&1 | sed 's/^/    /'
     if [ "$WAIT" -eq 1 ]; then
@@ -852,23 +1144,34 @@ sub_session_id() {
   # the preflight cache and works on its own. Keeping require_state would
   # make this subcommand fail in the same 2.0.29 case the rest of the
   # migration just fixed.
-  RESP=$(api_get_all_pages /api/session) || die "session-id: /api/session failed"
+  RESP=$(project_sessions_json) || die "session-id: /api/session failed"
   # Re-run with output capture (python3 inline output not reliable across all sh -> python stdin handling)
+  # D3: the pool convention is a LEADING '[NN] ' (pool_list and sub_clean both
+  # anchor it). 'search' matched '[01]' ANYWHERE, so a session titled e.g.
+  # '... crear worker [01] R5B1' resolved as worker 01. Exact-prefix match now,
+  # and >1 match is fail-closed instead of silently taking the first.
+  _sid_rc=0
   RESULT=$(printf '%s' "$RESP" | python3 -c "
 import json, sys, re
 d = sys.argv[1]
 sub = sys.argv[2]
 parent = sys.argv[3]
-title_pat = re.compile(r'\\[' + parent + (r'\\]s\\[' + sub if sub else r'\\]') + r'(?=\\s|\$)')
-data = json.loads(sys.stdin.read()).get('data', [])
-for s in data:
-    if s.get('location', {}).get('directory', '') != d:
-        continue
-    if title_pat.search(s.get('title', '')):
-        print(s.get('id', ''))
-        sys.exit(0)
+title_pat = re.compile(r'\\[' + parent + (r'\\]s\\[' + sub + r'\\]' if sub else r'\\]') + r'(?=\\s|\$)')
+data = json.loads(sys.stdin.read(), strict=False).get('data', [])
+hits = [s.get('id') or '' for s in data
+        if s.get('location', {}).get('directory', '') == d
+        and title_pat.match(s.get('title', ''))]
+if len(hits) == 1:
+    print(hits[0]); sys.exit(0)
+if len(hits) > 1:
+    print(','.join(hits)); sys.exit(2)
 sys.exit(1)
-" "$PROJ_DIR" "$SUB" "$PARENT") || { echo "session-id: $COMPACT not found in this project" >&2; exit 1; }
+" "$PROJ_DIR" "$SUB" "$PARENT") || _sid_rc=$?
+  case "$_sid_rc" in
+    0) : ;;
+    2) printf 'session-id: %s is AMBIGUOUS in this project (%s); pass the explicit sessionID (ses_...)\n' "$COMPACT" "$RESULT" >&2; exit 1 ;;
+    *) printf 'session-id: %s not found in this project\n' "$COMPACT" >&2; exit 1 ;;
+  esac
   printf '%s\n' "$RESULT"
 }
 
@@ -884,12 +1187,20 @@ Subcommands:
                                      POST /api/session; verifies parentID=null and literal location;
                                      dedup: if an inert session (out=0) with that title already exists in
                                      the project, it is reused; --force-new skips dedup and creates a new one
+                                     CONCURRENCY: the dedup->POST->cache sequence runs under the per-project
+                                     lock, so parallel invocations with the same title create ONE session
+                                     (the loser reuses it); the lock wait is bounded and fails closed
+                                     with "lock_status=fail-closed reason=busy" (rc 71)
   sessions                            project session inventory (id, out, title)
   send-prompt --session SID --prompt-file F
                                      POST prompt with awk JSON-escape (no python)
-  attach-tabs --session SID [--tui-cwd PATH] [--title T]
+  attach-tabs --session SID [--tui-cwd PATH] [--title T] [--force-tabs]
                                      additive merge of tabs.json with OS-specific lock; readback; not verified.
                                      --tui-cwd is optional: without it, the gate cached by preflight is used.
+                                     --force-tabs: the operator authorization that bypasses a blocked
+                                     gate (the tab is written unverified).
+  session-id COMPACT_REF              resolves a compact ref (00, 01, 01s02, [01], [01]s[02])
+                                     to the raw sessionID (ses_...) of a session in this project
   tabs [--tui-cwd PATH]              side-effect-free TUI/tabs gate: pids, real cwd, channel, version,
                                      ready|blocked + reason (recipe-tui-tabs.md §3/§6)
   watch --session SID --artifact A[,A...] [--deadline D] [--interval I]
@@ -899,20 +1210,25 @@ Subcommands:
   init-run --worker "T1" --worker "T2" [--title ROOT] [--no-attach-tabs]
                                      creates root (optional) + workers + tabs in one command.
                                      ONE single invocation per run: the [NN] sequence is assigned
-                                     inside it; calling it twice resets the counter to [01].
+                                     inside it from the deployed pool (max + 1), and the whole
+                                     read->decide->POST->cache sequence runs under the per-project
+                                     lock, so a second (or concurrent) invocation REUSES the root and
+                                     the idle workers instead of duplicating [00]/[01]; a worker with
+                                     prior work (or still running) fails closed and is not overwritten.
                                      Tabs by default if the cached gate says ready; --tui-cwd optional
   self-check                         reports OS, tools and cached state
-  pool                               deployed [NN] workers (ordinal, name, idle/running)
+  pool                               deployed [NN] workers (ordinal, name, state: empty=never-used / idle / running)
                                      and next free ordinal: look at this BEFORE launching
   verify-daughters --worker-id WID [--expected-parent WID]
                                      GET /api/session?parentID= lists children and validates that
                                      each one has parentID=expected_parent and
                                      location.directory=run.location.directory (R14).
   delete-session --session SID [--yes] [--force]
-                                     DELETE /api/session/{id} (verified in the active
+                                     DELETE /api/session/{sessionID} (verified in the active
                                      /openapi.json; R7 -> checks children and requires confirmation).
-                                     --yes: skips prompt. --force: skips the children check.
-  clean [--orchestrator SID] [--yes] [--force] [--dry-run]
+                                     --yes: skips the prompt. --force: skips the children
+                                     check ONLY -- the confirmation is always required.
+  clean [--orchestrator SID] [--yes] [--dry-run]
                                       Identify every session the orchestrator opened
                                       (its direct children, all [NN] Name workers in
                                       this project, and their transitive subagents) and
@@ -920,9 +1236,11 @@ Subcommands:
                                       after. The orchestrator is auto-detected as the most
                                       recent [00] session in this project, or pass
                                       --orchestrator SID. R7: requires confirmation or
-                                      --yes; --force skips the per-session child check.
+                                      --yes. Deletion order is topological (children
+                                      before parents), so the cascade is safe without
+                                      any extra flag.
   dispatch --prompt-file F [--target NN] [--count N|--auto-count] [--wait]
-                                     Routes the prompt to an idle worker session (or several,
+                                     Routes the prompt to an idle or empty worker session (or several,
                                      if complexity or --count warrants). The orchestrator's own
                                      context stays clean -- it only sees the dispatch summary
                                      and the workers' wait-idle outcomes. --auto-count
@@ -932,6 +1250,67 @@ Subcommands:
                                      implements the task itself.
 USAGE
 }
+
+# --- per-project critical section (A-4/A-5) --------------------------------------
+# create-worker / ensure-root / init-run all run a check-then-act sequence:
+#
+#     dedup_guard (query the catalog)  ->  POST /api/session  ->  cache_put
+#
+# Without mutual exclusion two concurrent invocations BOTH pass the guard and
+# BOTH create a session with the same title: the pool invariant "one title =
+# one session" breaks, init-run's reuse then picks a nondeterministic winner,
+# the duplicate becomes an orphan (A-4), and the paired cache_put calls lose
+# one of the two SIDs (A-5: root_session / worker_<title> / dispatch_<SID>).
+# init-run stacks three such races: root dedup TOCTOU (duplicate [00]),
+# ordinal assignment (both compute the same next ordinal) and the bare `>`
+# cache write (now atomic inside cache_put).
+#
+# The whole sequence now runs under ONE per-project lock -- lock_exec, the very
+# same helper that locks tabs.json (DRY: extracted from the tabs.json merge,
+# not a second locking strategy). The lock is held for the entire subcommand,
+# so the second invocation enters the guard AFTER the first has created and
+# cached its session.
+#
+# SEMANTICS DECISION: REUSE, not "busy". The documented dedup contract of this
+# skill is idempotent: "same title (slug) in the same project -> reuse the
+# inert session (out=0)"; "same title with prior work -> fail closed with
+# collision". Serializing keeps that contract exactly and removes the
+# duplicate: the loser re-runs the guard and reuses the winner's session (exit
+# 0, printed as `dedup=1 inert-session-reused`). The lock adds one NEW error
+# class only for its own failure: when the bounded wait expires it fails closed
+# with `lock_status=fail-closed reason=busy` (rc 71) and nothing is created --
+# it never hangs forever.
+#
+# Re-exec through the helper (not a shell trap): the helper owns the lock for
+# the lifetime of the child process and the kernel releases it on EVERY exit
+# path, including `die`, unexpected errors and signals -- there is no cleanup
+# code that can be skipped. ORCHESTRATE_LOCK_HELD=1 marks the child so the
+# dispatch below does not try to re-acquire the same lock (which would deadlock
+# against its own parent); nested function calls (init-run -> create-worker ->
+# send-prompt) never reach the dispatcher anyway.
+if [ "${ORCHESTRATE_LOCK_HELD:-0}" != "1" ]; then
+  case "$SUBCMD" in
+    create-worker|ensure-root|init-run)
+      : "${ORCHESTRATE_LOCK_TIMEOUT:=600}"
+      _proj_lock="$CACHE_DIR/orchestrate.lock"
+      # lock_exec requires an existing lock file (creating a missing lock
+      # target silently would mask a mis-resolved CACHE_DIR).
+ # symmetry at the LOCK file: a symlink planted here would be
+      # followed, so the lock would guard a DIFFERENT inode and the
+      # "one session per title" critical section would protect nothing.
+ [ -L "$_proj_lock" ] && { printf 'ERROR: the project lock %s is a symlink; refusing to lock through it (CWE-59)\n' "$_proj_lock" >&2; exit 1; }
+      [ -f "$_proj_lock" ] || : > "$_proj_lock" 2>/dev/null
+      [ -f "$_proj_lock" ] || {
+        printf 'ERROR: cannot create the project lock %s; fail-closed (nothing was created)\n' "$_proj_lock" >&2
+        exit 70
+      }
+      export ORCHESTRATE_LOCK_HELD=1
+      lock_exec "$_proj_lock" "$ORCHESTRATE_LOCK_TIMEOUT" \
+        sh "$SELF_DIR/orchestrate.sh" --os "$OS" "$SUBCMD" "$@"
+      exit $?
+      ;;
+  esac
+fi
 
 case "$SUBCMD" in
   preflight) sub_preflight "$@" ;;

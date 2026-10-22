@@ -104,7 +104,7 @@ Deliverable, criterion, and evidence: [checkable specification].
 
 ## 6. Re-dispatch to an existing worker (continuation with a new task)
 
-Reuse an already-registered worker when the run needs a second phase (e.g. applying an audit's findings). Before dispatching: confirm with `GET /api/session/{id}` that no execution is active (R8) and partition the **files** into disjoint scopes across workers.
+Reuse an already-registered worker when the run needs a second phase (e.g. applying an audit's findings). Before dispatching: confirm with `GET /api/session/{sessionID}` that no execution is active (R8) and partition the **files** into disjoint scopes across workers.
 
 ~~~~text
 RESUME: your previous turn was interrupted or concluded; IGNORE any previous Q&A messages. Your only task is this:

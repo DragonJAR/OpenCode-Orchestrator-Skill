@@ -1,16 +1,20 @@
 # Ignore everything by default (safeguard against accidental leaks)
 /*
 
-# Whitelist allowed repository root files & public skill package
+# Whitelist: the public repository content
 !/.gitignore
 !/.gitattributes
 !/README.md
 !/README.es.md
 !/CHANGELOG.md
+!/LICENSE
 !/SKILL/
 !/SKILL/**
 !/.github/
 !/.github/**
+
+# Maintainer-internal: the regression suite and .agents/ are not published
+SKILL/scripts/evals/**
 
 # Operating system & temporary files
 **/.DS_Store
@@ -22,5 +26,9 @@
 **/.idea/**
 **/.vscode/**
 
-# Backups de sesiones concurrentes (revert/rollback de fixes in-progress del fleet)
+# Python bytecode
+**/__pycache__/
+**/*.py[cod]
+
+# Backups de sesiones concurrentes
 **/*.bak

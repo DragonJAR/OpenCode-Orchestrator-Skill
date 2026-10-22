@@ -30,14 +30,16 @@ case "$PINNED" in
 esac
 CLI="${OPENCODE_CLI:-opencode}"
 
-# 1) state root + channel. `opencode debug paths state` is the canonical
-#    source; the channel is never guessed: it is deduced from the
+# 1) state root + channel. The root comes from the ONE resolver (state_root
+#    in os/_paths.sh, side-effect free and in this same directory):
+#    OPENCODE_STATE_ROOT > ORCHESTRATE_STATE_ROOT > the CLI registry > XDG.
+#    The detector, the preflight and the tabs merge each had their own
+#    resolution with a different order, so with ORCHESTRATE_STATE_ROOT set the
+#    gate and the merge pointed at different roots and the tabs feature broke
+#    silently. The channel is never guessed: it is deduced from the
 #    subdirectory that contains tui/tabs.json.
-STATE_ROOT="${OPENCODE_STATE_ROOT:-}"
-if [ -z "$STATE_ROOT" ] && command -v "$CLI" >/dev/null 2>&1; then
-  STATE_ROOT=$("$CLI" debug paths state 2>/dev/null | head -1)
-fi
-[ -n "$STATE_ROOT" ] || STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/opencode"
+. "$(dirname "$0")/_paths.sh"
+STATE_ROOT=$(state_root)
 
 TABS_JSON=""; CHANNEL=""
 if [ -d "$STATE_ROOT" ]; then
@@ -125,7 +127,7 @@ GATE=blocked; REASON=""
 if [ -z "$PIDS" ]; then
   REASON="no active local TUI (no live opencode process; tabs not applicable)"
 elif [ "$VERSION_OK" != yes ]; then
-  REASON="TUI version $TUI_VERSION is not 2.x$ (the gate requires major 2; fail-closed)"
+  REASON="TUI version $TUI_VERSION is not 2.x (the gate requires major 2; fail-closed)"
 elif [ -z "$TABS_JSON" ]; then
   REASON="no tui/tabs.json found under $STATE_ROOT (TUI without initialized storage)"
 elif [ "$MATCH" != yes ]; then

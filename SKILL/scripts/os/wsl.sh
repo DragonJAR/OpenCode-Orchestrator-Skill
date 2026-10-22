@@ -1,28 +1,20 @@
 #!/bin/sh
-# WSL: same as Linux (flock(1) + python3). Caveat: if the state root lives on
-# /mnt/c (drvfs), POSIX locks are not reliable across Windows/Linux processes;
-# in doubt, attach-tabs fails closed and the tab is marked not verified (use the CLI plugin).
+# WSL: same as Linux (the shared lock_exec -> python fcntl). Caveat: if the
+# state root lives on /mnt/c (drvfs), POSIX locks are not reliable across
+# Windows/Linux processes; in doubt, attach-tabs fails closed and the tab is
+# marked not verified (use the CLI plugin).
+#
+# The merge is the ONE shared implementation (os_tabs_merge_shared in
+# os/_common.sh). WSL declares only what is genuinely OS-specific: the drvfs
+# fail-closed check.
 os_project_dir() { pwd -P; }
-os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
-  # Path resolved by tabs_json_path (SINGLE SOURCE); only flock(1) + drvfs here.
-  # ORCHESTRATE_TABS_JSON is exported so the python writes EXACTLY the file
-  # flocked below (same contract as darwin.sh/windows-gbash.sh; see linux.sh
-  # for the lock-vs-write divergence this closes).
-  if [ -n "${ORCHESTRATE_TABS_JSON:-}" ]; then
-    _tabs="$ORCHESTRATE_TABS_JSON"
-  else
-    _tabs=$(tabs_json_path) || { printf 'tabs_status=no-tui\n'; return 4; }
-    export ORCHESTRATE_TABS_JSON="$_tabs"
-  fi
-  case "$_tabs" in
+# os_tabs_extra_check PATH -> extra fail-closed check (drvfs: unreliable lock).
+os_tabs_extra_check() {
+  case "$1" in
     /mnt/[a-zA-Z]/*) printf 'tabs_status=fail-closed (state on drvfs: unreliable lock)\n' >&2; return 3 ;;
   esac
-  command -v flock >/dev/null 2>&1 || { printf 'flock(1) required for tabs on wsl\n' >&2; return 2; }
-  command -v python3 >/dev/null 2>&1 || { printf 'python3 required for tabs on wsl\n' >&2; return 2; }
-  [ -f "$_tabs" ] || { printf 'tabs_status=no-tui\n'; return 4; }
-  _pyf=$(tabs_merge_py_file)
-  flock -x "$_tabs" python3 "$_pyf" "$1" "$2" "$3" "$4" none
-  _rc=$?
-  rm -f "$_pyf"
-  return $_rc
+  return 0
+}
+os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
+  os_tabs_merge_shared "$@"
 }

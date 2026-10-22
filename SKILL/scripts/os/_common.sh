@@ -6,18 +6,24 @@ set -u
 NL='
 '
 
-# --- project dir (OS-normalized; windows-gbash converts to Windows literal) ----
-PROJ_DIR="${ORCHESTRATE_DIR:-$(os_project_dir 2>/dev/null || pwd -P)}"
-if command -v shasum >/dev/null 2>&1; then
-  PROJ_HASH=$(printf '%s' "$PROJ_DIR" | shasum -a 256 | cut -c1-12)
-elif command -v sha256sum >/dev/null 2>&1; then
-  PROJ_HASH=$(printf '%s' "$PROJ_DIR" | sha256sum | cut -c1-12)
-else
-  PROJ_HASH=$(printf '%s' "$PROJ_DIR" | cksum | cut -d' ' -f1)
-fi
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/orchestrate/$PROJ_HASH"
-mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR="/tmp/orchestrate-$PROJ_HASH"
-mkdir -p "$CACHE_DIR" 2>/dev/null
+# F5 (DRY): the project/cache path derivation lives in os/_paths.sh so a
+# standalone preflight.sh populates the SAME cache. Callers (orchestrate.sh
+# + the test fixtures) must source os/_paths.sh BEFORE this file: it sets
+# PROJ_DIR, PROJ_HASH and CACHE_DIR (the same rule used by standalone
+# preflight.sh). The require below enforces the contract fail-closed.
+[ "${CACHE_DIR+set}" = set ] || { printf '%s\n' 'ERROR: os/_paths.sh must be sourced before os/_common.sh (sets CACHE_DIR)' >&2; exit 1; }
+#: also refuse empty or "/" (would turn every "$CACHE_DIR/<key>" into "/<key>").
+case "$CACHE_DIR" in ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;; esac
+# The cache DIR is prepared HERE (the only writer of the cache keys), so that
+# os/_paths.sh stays side-effect free and can be sourced by read-only scripts
+# (the TUI detector). (CWE-377/732): a predictable /tmp fallback let a
+# pre-created dir or symlink poison the endpoint/auth_password/model_default
+# writes; mktemp -d is unpredictable and 700 keeps other users out.
+mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=$(mktemp -d 2>/dev/null) || CACHE_DIR=""
+case "$CACHE_DIR" in
+ ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;;
+esac
+mkdir -p "$CACHE_DIR" 2>/dev/null && chmod 700 "$CACHE_DIR" 2>/dev/null || true
 
 # --- http ---------------------------------------------------------------------
 # AUTH is intentionally unquoted. The basic-auth password used by
@@ -39,28 +45,90 @@ http_post_json() { curl -fsS -m 30 ${AUTH:-} -H 'Content-Type: application/json'
 # HTML); the opencode CLI resolves auth internally. Bypassing curl removes
 # the 401 surface for the whole 50+ subcommand set at once.
 api_get_all_pages() {
-  _p="$1" _cursor="" _first=1 _out="" _resp=""
-  while : ; do
-    if [ -n "$_cursor" ]; then _url="$_p?cursor=$_cursor"; else _url="$_p"; fi
+  _p="$1" _cursor="" _prev="x" _first=1 _out="" _resp="" _iter=0
+  while [ "$_iter" -lt 30 ] ; do
+    _iter=$((_iter+1))
+    # Stable-cursor guard: the serve can re-anchor to the same page (cursor.next
+    # repeats); without this the loop never ends and the API eventually rc=1.
+    [ "$_cursor" = "$_prev" ] && break
+    _prev="$_cursor"
+    # A path may already carry a query string (e.g. "/api/session?parentID=X"):
+    # the separator must then be "&". With "?" the second one became part of
+    # the first value (parentID="ses_x?limit=200"), the filter matched nothing
+    # and the caller silently got an EMPTY list.
+    if [ -n "$_cursor" ]; then
+      case "$_p" in
+        *\?*) _url="$_p&limit=200&cursor=$_cursor" ;;
+        *)    _url="$_p?limit=200&cursor=$_cursor" ;;
+      esac
+    else
+      case "$_p" in
+        *\?*) _url="$_p&limit=200" ;;
+        *)    _url="$_p?limit=200" ;;
+      esac
+    fi
     _resp=$(opencode api GET "$_url" 2>/dev/null) || return $?
     [ -z "$_resp" ] && return 3
+    # B-page-silent: a transient serve hiccup (e.g. literal newline inside
+    # a JSON string, observed 1/5 runs in the baseline) used to either
+    # corrupt _out via the except's stdin tail or terminate pagination
+    # early on an empty cursor from the bad page. Retry the SAME url once
+    # before falling through: a 2nd request typically returns clean JSON.
+    if ! printf '%s' "$_resp" | python3 -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null; then
+      _resp=$(opencode api GET "$_url" 2>/dev/null) || return $?
+      # The retry is RE-VALIDATED. Before, a second malformed page was accepted
+      # and the pagination ended with a truncated catalog and rc 0: the callers
+      # (pool_list, sub_sessions, sub_session_id) treat the result as the
+      # COMPLETE list, so the pool read as "max ordinal 0" and the next worker
+      # reused [01]. A malformed page is now fatal (rc 3), never a short list.
+      printf '%s' "$_resp" | python3 -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null || return 3
+    fi
     if [ "$_first" = 1 ]; then _out="$_resp"; _first=0
     else
-      _out=$(printf '%s\n%s\n' "$_out" "$_resp" | python3 -c '
+      # Merge the two pages. They are NOT split by LINE: the serve
+      # sporadically emits a literal newline inside a JSON string (a title with
+      # a raw newline), so readline() cut the document in half, the parse
+      # failed and the pagination ended with a truncated list (silently, before
+      # the fail-closed guard). The raw decoder reads one document at a time
+      # and stops at its end, so a newline inside a string is harmless.
+      _merged=$(printf '%s\n%s\n' "$_out" "$_resp" | python3 -c '
 import json, sys
-try:
-  a = json.loads(sys.stdin.readline())
-  b = json.loads(sys.stdin.readline())
-  a["data"].extend(b.get("data", []))
-  if "cursor" not in a: a["cursor"] = b.get("cursor", {})
-  print(json.dumps(a))
-except Exception:
-  print(sys.stdin.read())
+raw = sys.stdin.read()
+dec = json.JSONDecoder(strict=False)
+docs = []
+i = 0
+while i < len(raw):
+    while i < len(raw) and raw[i] in " \t\r\n":
+        i += 1
+    if i >= len(raw):
+        break
+    obj, i = dec.raw_decode(raw, i)
+    docs.append(obj)
+if len(docs) != 2:
+    raise SystemExit(1)
+a, b = docs
+a["data"].extend(b.get("data", []))
+if "cursor" not in a:
+    a["cursor"] = b.get("cursor", {})
+print(json.dumps(a, separators=(",", ":")))
 ' 2>/dev/null)
+      # A merge that produced nothing is NOT "keep the prior pages": the page
+      # is valid JSON (it was validated above) but the SHAPE is not what the
+      # merge expects, and the caller would then read a truncated list as the
+      # complete one. Fail closed instead.
+      [ -n "$_merged" ] || return 3
+      _out="$_merged"
     fi
+    # `or ""`: a JSON null next-cursor must print empty, not the literal
+    # string "None" (querying ?cursor=None returns InvalidCursorError and the
+    # loop would discard every page already accumulated).
     _cursor=$(printf '%s' "$_resp" | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-print(d.get("cursor",{}).get("next",""))' 2>/dev/null)
+d=json.load(sys.stdin, strict=False)
+print(d.get("cursor",{}).get("next") or "")' 2>/dev/null) || return 3
+    # A FAILED cursor extraction is not "no more pages": before, the empty
+    # cursor ended the loop silently and the caller got a truncated catalog
+    # with rc 0. The rc of the extraction is checked above; an EMPTY but
+    # successful extraction is the real end of the list.
     [ -z "$_cursor" ] && break
   done
   printf '%s' "$_out"
@@ -70,15 +138,94 @@ print(d.get("cursor",{}).get("next",""))' 2>/dev/null)
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
   awk 'BEGIN{ORS=""}{gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");gsub(/\r/,"\\r");if(NR>1)printf "\\n";printf "%s",$0}'
 }
-json_get_field() {  # stdin=JSON, $1=KEY -> emits the value
-  awk -v k="\"$1\"" 'index($0,k){p=index($0,k)+length(k);
-    while(p<=length($0)&&substr($0,p,1)~/[ \t:]/)p++; s=p; c=substr($0,s,1);
-    if(c=="{"||c=="["){d=0;for(i=s;i<=length($0);i++){x=substr($0,i,1);if(x==c)d++;else if(x==(c=="{"?"}":"]")){d--;if(d==0){print substr($0,s,i-s+1);exit}}}}
-    else{e=p;while(e<=length($0)&&substr($0,e,1)!~/[,\}]/)e++;v=substr($0,s,e-s);gsub(/^"|"$/,"",v);print v;exit}}'
+# project_sessions_json -> the sessions of THIS project, paginated.
+# The query is FILTERED BY PROJECT (the API accepts `directory`): without it
+# the whole catalog of the instance was downloaded (thousands of sessions,
+# 50 per page -> 30+ requests, the pagination cap) and filtered client-side.
+# On a big instance that was slow AND failed intermittently. The client-side
+# filter stays as a safety net: the server filter narrows, it does not trust.
+project_sessions_json() {
+  api_get_all_pages "/api/session?directory=$(url_encode "$PROJ_DIR")" || return 3
+}
+# url_encode STRING -> percent-encoded for a query parameter. A project
+# directory can hold spaces, '+', '&' and non-ASCII, and an unencoded value
+# would change the query the server sees (or break the URL).
+url_encode() {
+  python3 -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$1" 2>/dev/null
+}
+# json_get_field KEY [VALUE_PREFIX] : stdin=JSON -> the value of the "KEY" field.
+#
+# ONE implementation of ONE offset convention. The old inline
+# `match(...)/substr(RSTART+n, RLENGTH-m)` extractions mixed two conventions:
+# when the regex did NOT include the closing quote of a string value but the
+# length still subtracted it, the value lost its last character (the message id
+# printed as msg_01HXYZABCDEF instead of msg_01HXYZABCDEFG) and every numeric
+# field lost a digit (time.updated 1792693166999 -> 79269316699, which then
+# compared as "older" and could classify a busy session as idle). Here the value
+# is located by the KEY and read to its natural end, so the length can never
+# disagree with the pattern.
+#
+# VALUE_PREFIX restricts the match to values starting with it (e.g. "msg_"),
+# so `id` never picks up a different id.
+json_get_field() {
+  awk -v key="$1" -v pre="${2:-}" '
+    { rest = $0
+      k = "\"" key "\""
+      while ((i = index(rest, k)) > 0) {
+        p = i + length(k)
+        while (p <= length(rest) && substr(rest, p, 1) ~ /[ \t]/) p++
+        if (substr(rest, p, 1) != ":") { rest = substr(rest, i + length(k)); continue }
+        p++
+        while (p <= length(rest) && substr(rest, p, 1) ~ /[ \t]/) p++
+        v = substr(rest, p)
+        rest = substr(rest, p)
+        c = substr(v, 1, 1)
+        if (c == "\"") {
+          if (pre != "" && substr(v, 2, length(pre)) != pre) continue
+          q = substr(v, 2); j = index(q, "\"")
+          if (j > 0) { print substr(q, 1, j - 1) } else { print q }
+          exit
+        }
+        if (c == "{" || c == "[") {
+          d = 0
+          for (n = 1; n <= length(v); n++) {
+            x = substr(v, n, 1)
+            if (x == c) d++
+            else if (x == (c == "{" ? "}" : "]")) { d--; if (d == 0) { print substr(v, 1, n); exit } }
+          }
+          print v
+          exit
+        }
+        if (pre != "" && substr(v, 1, length(pre)) != pre) continue
+        e = 1
+        while (e <= length(v) && substr(v, e, 1) !~ /[,}\]]/) e++
+        out = substr(v, 1, e - 1)
+        sub(/[ \t\r]+$/, "", out)
+        print out
+        exit
+      }
+    }'
 }
 
 # --- kv cache -------------------------------------------------------------------
-cache_put() {  # KEY VALUE -> persists VALUE to CACHE_DIR/KEY; JSON secrets redacted first.
+# A-5: cache_put used to be a bare `>` truncate. Two concurrent writers to the
+# SAME key (root_session / worker_<title> from two parallel init-runs) raced
+# between the truncate and the dump: a concurrent cache_get read a torn/partial
+# file and one write was lost. The publish below is now atomic: the payload is
+# written to a temp file IN THE SAME DIRECTORY and moved with mv(1) -> rename(2),
+# so a reader always sees either the previous file or the complete new one.
+# Every cache write site (root_session, worker_<title>, dispatch_<SID>, ...) goes
+# through this single helper (DRY), so the fix covers all of them at once.
+cache_write() {  # KEY VALUE [MODE] -> persists VALUE to CACHE_DIR/KEY. ONE writer.
+  # MODE=redact (default) re-serializes a JSON value with the secret fields
+  # masked; MODE=raw writes the value VERBATIM.
+  # WHY two modes: the redaction RESERIALIZES any value that happens to parse
+  # as JSON, so a password of "1.50" would be rewritten as "1.5" and a quoted
+  # string would gain quotes. The auth password is written verbatim.
+  #
+ # (CWE-59): a symlink planted at this path would make the write truncate
+  # its TARGET. Fail closed: refuse to write through symlinks at all.
+ [ -L "$CACHE_DIR/$1" ] && die "cache key '$1' is a symlink; refusing to write through it (CWE-59)"
   # Redacts apiKey / password / token (case-insensitive) recursively from any JSON
   # value before writing. Non-JSON values pass through unchanged. Defense in depth
   # for S1 (gap V1): even if a future caller routes an /api/model/default body
@@ -86,12 +233,22 @@ cache_put() {  # KEY VALUE -> persists VALUE to CACHE_DIR/KEY; JSON secrets reda
   # the legacy plain-printf write when python3 is unavailable (cache consumers
   # are unaffected; only the redaction is skipped). Contract: same signature,
   # same exit codes.
-  if command -v python3 >/dev/null 2>&1; then
+  _ck="$CACHE_DIR/$1"
+  # Temp file in the SAME directory (rename must not cross filesystems); mktemp
+  # gives cross-process uniqueness; the $$ fallback covers a missing mktemp.
+  _ct=$(mktemp "$CACHE_DIR/.cacheput.XXXXXX" 2>/dev/null) || _ct="$_ck.tmp.$$"
+ #: the fallback name is predictable (PID-suffixed) on every OS that
+  # lacks /dev/null-safe mktemp; an attacker who plants a same-name symlink
+ # would make the truncate target it. symmetry at the temp path.
+ [ -L "$_ct" ] && die "cache temp '$_ct' is a symlink; refusing to write through it (CWE-59)"
+  if [ "${3:-redact}" = "raw" ] || ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$2" > "$_ct" || { rm -f "$_ct"; return 1; }
+  else
     printf '%s\n' "$2" | python3 -c '
 import json, sys
 raw = sys.stdin.read()
 try:
-    obj = json.loads(raw)
+    obj = json.loads(raw, strict=False)
 except Exception:
     sys.stdout.write(raw)
     sys.exit(0)
@@ -106,18 +263,51 @@ out = json.dumps(redact(obj))
 if not out.endswith("\n"):
     out += "\n"
 sys.stdout.write(out)
-' > "$CACHE_DIR/$1"
-  else
-    printf '%s\n' "$2" > "$CACHE_DIR/$1"
+' > "$_ct" || { rm -f "$_ct"; return 1; }
   fi
+  # Atomic publish. The temp file is never read by cache_get (key prefix ".cacheput"),
+  # and a failed mv leaves the previous value in place (fail-closed, no torn state).
+  mv -f "$_ct" "$_ck" || { rm -f "$_ct"; return 1; }
 }
-cache_get() { if [ -f "$CACHE_DIR/$1" ]; then cat "$CACHE_DIR/$1"; else printf ''; fi; }
-cache_has() { [ -f "$CACHE_DIR/$1" ] && [ -s "$CACHE_DIR/$1" ]; }
+# cache_put KEY VALUE -> persists VALUE with the JSON secret redaction.
+cache_put() { cache_write "$1" "$2" redact; }
+# cache_put_raw KEY VALUE -> persists VALUE verbatim (no re-serialization).
+cache_put_raw() { cache_write "$1" "$2" raw; }
+cache_get() {
+ # read path: a poisoned symlink is never trusted; report it and return
+  # empty so callers see the key as absent instead of reading the target.
+  if [ -L "$CACHE_DIR/$1" ]; then
+ printf 'ERROR: cache key %s is a symlink; treated as poison (CWE-59)\n' "$1" >&2
+    printf ''; return 0
+  fi
+  if [ -f "$CACHE_DIR/$1" ]; then cat "$CACHE_DIR/$1"; else printf ''; fi; }
+#: same refusal in the presence test, so require_state cannot bless a
+# symlinked key (cache_get alone would still be silenced by 2>/dev/null).
+cache_has() { [ -f "$CACHE_DIR/$1" ] && [ ! -L "$CACHE_DIR/$1" ] && [ -s "$CACHE_DIR/$1" ]; }
+
+# cache_purge_sid SID -> removes the cache keys that POINT at a deleted
+# session (C-12): dispatch_<SID>, plus root_session / root_session_hint /
+# worker_* whose VALUE is exactly SID. Keys of sessions that were NOT deleted
+# are left alone. Single helper for delete-session and clean (DRY).
+cache_purge_sid() {
+  rm -f "$CACHE_DIR/dispatch_$1" 2>/dev/null
+  for _k in "$CACHE_DIR/root_session" "$CACHE_DIR/root_session_hint" "$CACHE_DIR"/worker_*; do
+ #: real cache keys only. `.cacheput.*` and `*.tmp.*` are reserved
+    # names for in-flight cache_put artifacts (mv has not published yet, the
+    # content is partial). Letting `cat` read or `rm` race the temp turns a
+    # concurrent write into a lost or torn value. Same exclusion in
+ # preflight.sh's symlink scan.
+    case "${_k##*/}" in .cacheput.*|*.tmp.*) continue ;; esac
+    [ -f "$_k" ] || continue
+    [ "$(cat "$_k" 2>/dev/null)" = "$1" ] && rm -f "$_k"
+  done
+  return 0
+}
 # auth_flag: Basic-auth flag for curl. It lives HERE, not in orchestrate.sh,
 # because find_dedup and http_* use it and _common.sh is the low layer.
 # Defining it in the caller would create a dependency on sourcing order:
 # correct at runtime, fragile against any test or direct inclusion of _common.sh.
-auth_flag() { if cache_has auth_password; then printf '%s' "-u opencode:$(cat "$CACHE_DIR/auth_password")"; fi; }
+auth_flag() { if cache_has auth_password; then printf '%s' "-u opencode:$(cache_get auth_password)"; fi; }
 require_state() {
   for k in endpoint version projectID model_default; do
     cache_has "$k" || { printf 'ERROR: state not initialized; run: orchestrate.sh preflight %s\n' "$PROJ_DIR" >&2; exit 1; }
@@ -125,6 +315,22 @@ require_state() {
 }
 
 # --- arg parsing ------------------------------------------------------------------
+# assert_value FLAG COUNT : fail closed (exit 2) when a value-taking flag was
+# given WITHOUT its value.
+#
+# WHY this helper exists: `shift 2` with fewer than two arguments left does NOT
+# advance the argument list (POSIX: the shift fails and $#/$1 are left
+# unchanged). The parse loop then re-reads the same flag on every iteration:
+# an INFINITE LOOP with no output, no error and no timeout -- the caller spins
+# at 100% CPU forever. `orchestrate.sh send-prompt --session` (no value) hung
+# this way. Every value-taking flag validates through this ONE helper (DRY):
+# one rule, N call sites, no way to forget it.
+assert_value() {
+  if [ "${2:-0}" -lt 2 ]; then
+    printf 'ERROR: %s requires a value\n' "$1" >&2
+    exit 2
+  fi
+}
 parse_kv() {
   # POSITIONAL collects loose tokens. Before, `*) shift` discarded them
   # silently, so `init-run --workers "T1" "T2" "T3"` created only T1 with no
@@ -133,24 +339,26 @@ parse_kv() {
   # shellcheck disable=SC2034  # TITLE/AGENT/MODEL/WORKER_ID are populated by parse_kv and read by callers (sub_create_worker, sub_send_prompt, etc.); shellcheck can't see across function boundaries
   while [ $# -gt 0 ]; do
     case "$1" in
-      --title) TITLE="${2:-}"; shift 2 ;; --title=*) TITLE="${1#--title=}"; shift ;;
-      --agent) AGENT="${2:-}"; shift 2 ;; --agent=*) AGENT="${1#--agent=}"; shift ;;
-      --model) MODEL="${2:-}"; shift 2 ;; --model=*) MODEL="${1#--model=}"; shift ;;
-      --session) SID="${2:-}"; shift 2 ;; --session=*) SID="${1#--session=}"; shift ;;
-      --worker-id) WORKER_ID="${2:-}"; shift 2 ;; --worker-id=*) WORKER_ID="${1#--worker-id=}"; shift ;;
-      --expected-parent) EXPECTED_PARENT="${2:-}"; shift 2 ;; --expected-parent=*) EXPECTED_PARENT="${1#--expected-parent=}"; shift ;;
-      --artifact) ARTIFACT="${2:-}"; shift 2 ;; --artifact=*) ARTIFACT="${1#--artifact=}"; shift ;;
-      --tui-cwd) TUI_CWD="${2:-}"; shift 2 ;; --tui-cwd=*) TUI_CWD="${1#--tui-cwd=}"; shift ;;
-      -d|--deadline) DEADLINE="${2:-}"; shift 2 ;; -i|--interval) INTERVAL="${2:-}"; shift 2 ;;
-      -s|--session) SID="${2:-}"; shift 2 ;; -a|--artifact) ARTIFACT="${2:-}"; shift 2 ;;
-      --workers) WORKERS="${2:-}"; shift 2 ;;
-      --count) COUNT="${2:-}"; shift 2 ;;
-      --worker) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${2:-}"; shift 2 ;;
+      --title) assert_value --title "$#"; TITLE="${2:-}"; shift 2 ;; --title=*) TITLE="${1#--title=}"; shift ;;
+      --agent) assert_value --agent "$#"; AGENT="${2:-}"; shift 2 ;; --agent=*) AGENT="${1#--agent=}"; shift ;;
+      --model) assert_value --model "$#"; MODEL="${2:-}"; shift 2 ;; --model=*) MODEL="${1#--model=}"; shift ;;
+      --session) assert_value --session "$#"; SID="${2:-}"; shift 2 ;; --session=*) SID="${1#--session=}"; shift ;;
+      --worker-id) assert_value --worker-id "$#"; WORKER_ID="${2:-}"; shift 2 ;; --worker-id=*) WORKER_ID="${1#--worker-id=}"; shift ;;
+      --expected-parent) assert_value --expected-parent "$#"; EXPECTED_PARENT="${2:-}"; shift 2 ;; --expected-parent=*) EXPECTED_PARENT="${1#--expected-parent=}"; shift ;;
+      --artifact) assert_value --artifact "$#"; ARTIFACT="${2:-}"; shift 2 ;; --artifact=*) ARTIFACT="${1#--artifact=}"; shift ;;
+      --tui-cwd) assert_value --tui-cwd "$#"; TUI_CWD="${2:-}"; shift 2 ;; --tui-cwd=*) TUI_CWD="${1#--tui-cwd=}"; shift ;;
+      -d|--deadline) assert_value --deadline "$#"; DEADLINE="${2:-}"; shift 2 ;;
+      -i|--interval) assert_value --interval "$#"; INTERVAL="${2:-}"; shift 2 ;;
+      -s) assert_value -s "$#"; SID="${2:-}"; shift 2 ;;
+      -a) assert_value -a "$#"; ARTIFACT="${2:-}"; shift 2 ;;
+      --workers) assert_value --workers "$#"; WORKERS="${2:-}"; shift 2 ;;
+      --count) assert_value --count "$#"; COUNT="${2:-}"; shift 2 ;;
+      --worker) assert_value --worker "$#"; WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${2:-}"; shift 2 ;;
       --worker=*) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${1#--worker=}"; shift ;;
-      --prompt-file) PROMPT_FILE="${2:-}"; shift 2 ;;
-      --router-prompt) ROUTER_PROMPT="${2:-}"; shift 2 ;;
+      --prompt-file) assert_value --prompt-file "$#"; PROMPT_FILE="${2:-}"; shift 2 ;;
+      --router-prompt) assert_value --router-prompt "$#"; ROUTER_PROMPT="${2:-}"; shift 2 ;;
       --no-router) NO_ROUTER=1; shift ;;
-      --target) WORKER="${2:-}"; shift 2 ;;
+      --target) assert_value --target "$#"; WORKER="${2:-}"; shift 2 ;;
       --auto-count) AUTO_COUNT=1; shift ;;
       --wait) WAIT=1; shift ;;
       --no-attach-tabs) NO_ATTACH=1; shift ;;
@@ -165,30 +373,166 @@ parse_kv() {
   done
 }
 
-# --- tabs merge engine (python3; lock strategy chosen per OS) ---------------------
+# --- advisory file lock (ONE implementation for the whole skill; DRY) ------------
+# This is the lock that used to live INSIDE the tabs.json merge (python fcntl,
+# with a fail-closed guard when the interpreter has no fcntl). It was extracted
+# here, unchanged in spirit, so that there is exactly ONE locking mechanism in
+# the skill and every caller shares its guarantees:
+#
+#   * tabs.json merge (os_tabs_merge) and tabs prune (tabs_prune_ids);
+#   * the per-project critical section of create-worker / ensure-root /
+#     init-run (the guard -> POST -> cache_put sequence that used to be a
+#     check-then-act race, A-4/A-5).
+#
+# WHY python fcntl and not flock(1): flock(1) does not exist on macOS and is
+# absent on Windows Git Bash, so it cannot be the portable primitive. python3's
+# fcntl.flock is the same POSIX advisory lock on every supported platform
+# (darwin, linux, WSL, MSYS2/Git Bash) and it is already a hard dependency of
+# the merge path. When the interpreter has no fcntl (e.g. the native Windows
+# python on PATH) the helper FAILS CLOSED instead of pretending to lock.
+#
+# GUARANTEES:
+#   * mutual exclusion: the lock is held by the helper process for the whole
+#     lifetime of the wrapped command;
+#   * BOUNDED wait: after TIMEOUT_S the helper fails closed (rc 71). It never
+#     waits forever and never hangs;
+#   * released on EVERY exit path: the helper unlocks in a finally block, and
+#     the kernel releases the lock even if the helper is killed (SIGKILL) or
+#     the command dies. There is no shell trap that can be skipped;
+#   * the wrapped command's exit code is propagated unchanged; only the
+#     helper's own failures use the reserved codes below.
+#
+# Exit codes (: the wrapped command's rc is propagated 1:1, not remapped):
+#   0..255 the wrapped command's own exit code (128+N if it dies by signal N).
+#   70     no usable lock mechanism (python3/fcntl missing, lock file unusable,
+#          or the command could not be launched) -> fail-closed, nothing written.
+#   71     the lock was still held after the bounded wait -> fail-closed.
+#   A wrapped command that itself returns 70/71 collides BY VALUE only; the
+#   discriminator is the `lock_status=fail-closed` line on stderr (emitted
+#   only on the helper's own failures). Remapping the collision (e.g. to 72)
+#   would silently rewrite a legitimate rc and break the caller's contract,
+#   so it is deliberately NOT done: the call graph under lock_exec (merge
+#   helpers + critical-section guards) never wraps a command exiting 70/71.
+LOCK_EXEC_PY='import os, subprocess, sys, time
+
+def fail(code, msg):
+    sys.stderr.write("lock_status=fail-closed reason=%s\n" % msg)
+    sys.exit(code)
+
+if len(sys.argv) < 4:
+    fail(70, "usage: lock_exec LOCKFILE TIMEOUT_S COMMAND [ARG...]")
+lockfile, timeout, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
+try:
+    import fcntl
+except Exception:
+    fail(70, "this python3 has no fcntl (e.g. native Windows python); no lock was taken")
+try:
+    tmo = float(timeout)
+except Exception:
+    fail(70, "invalid timeout: %s" % timeout)
+try:
+    fd = os.open(lockfile, os.O_RDWR)
+except Exception as exc:
+    fail(70, "cannot open lock file %s: %s" % (lockfile, exc))
+deadline = time.time() + tmo
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except OSError:
+        if time.time() >= deadline:
+            os.close(fd)
+            fail(71, "busy: %s is still locked after %ss" % (lockfile, timeout))
+        time.sleep(0.2)
+try:
+    rc = subprocess.call(cmd)
+except Exception as exc:
+    rc = 70
+    sys.stderr.write("lock_status=fail-closed reason=cannot run command: %s\n" % exc)
+finally:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+if rc < 0:
+    rc = 128 + (-rc)
+sys.exit(rc)'
+
+# lock_py_file -> prints the path of a temp .py holding LOCK_EXEC_PY.
+lock_py_file() {
+  _lpf=$(mktemp "${TMPDIR:-/tmp}/orchlock.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$LOCK_EXEC_PY" > "$_lpf" || { rm -f "$_lpf"; return 1; }
+  printf '%s' "$_lpf"
+}
+
+# lock_exec LOCKFILE TIMEOUT_S COMMAND [ARG...]
+# Runs COMMAND with an exclusive advisory lock on LOCKFILE held for its whole
+# lifetime. The lock file must already exist (the caller owns its creation:
+# a lock target that does not exist is a bug, not something to create silently).
+# (exit-code contract): the wrapped command's rc propagates 1:1 (a
+# signal death is reported as 128+N by the helper). 70/71 are the helper's OWN
+# reserved codes (no-lock-mechanism / busy). NOT remapped: no wrapped command
+# in this skill exits 70/71 (verified R5: orchestrate.sh exits 70 only in the
+# block the re-exec'd child skips), and remapping would falsify real codes.
+lock_exec() {
+  # Arity is checked before the shift: `shift 2` with fewer than two arguments
+  # left does NOT advance the list (POSIX), so the helper would receive the
+  # wrong argv. Usage error -> 70 (the helper's own reserved fail-closed code).
+  [ $# -ge 3 ] || { printf 'ERROR: lock_exec: need LOCKFILE TIMEOUT_S COMMAND\n' >&2; return 70; }
+  _lf="$1"; _lt="$2"; shift 2
+  [ $# -gt 0 ] || { printf 'ERROR: lock_exec: no command to run\n' >&2; return 70; }
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'lock_status=fail-closed reason=python3 not found; no lock mechanism\n' >&2
+    return 70
+  }
+  _lpy=$(lock_py_file) || {
+    printf 'lock_status=fail-closed reason=cannot create the lock helper\n' >&2
+    return 70
+  }
+  # On Git Bash a native Win32 python cannot open an MSYS path; cygpath -m
+  # converts it (no-op where cygpath does not exist: darwin/linux/WSL).
+  # BOTH paths need it: the helper script AND the lock file. Without the
+  # lock-file conversion the helper failed closed with "cannot open lock file"
+  # on every create-worker / ensure-root / init-run under Git Bash (the
+  # lockfile path comes from CACHE_DIR, which is an MSYS path there).
+  _lpy_run="$_lpy"; _lf_run="$_lf"
+  if command -v cygpath >/dev/null 2>&1; then
+    _lpy_run=$(cygpath -m "$_lpy" 2>/dev/null || printf '%s' "$_lpy")
+    _lf_run=$(cygpath -m "$_lf" 2>/dev/null || printf '%s' "$_lf")
+  fi
+  python3 "$_lpy_run" "$_lf_run" "$_lt" "$@"
+  _lrc=$?
+  rm -f "$_lpy"
+  return $_lrc
+}
+
+# --- tabs merge engine (python3; THE lock comes from lock_exec, not from here) ----
+# The merge no longer locks on its own: the per-OS adapters wrap it in
+# lock_exec (the ONE lock above), which holds an exclusive fcntl lock on the
+# tabs.json inode for the whole merge. The merge writes through an "r+"
+# descriptor WITHOUT renaming the file, so the inode (and therefore the
+# external lock) stays valid for the entire critical section (S1b-10 note).
 TABS_MERGE_PY='import json, os, shutil, sys
-sid, title, tui_cwd, bk, lockmode = sys.argv[1:6]
+sid, title, tui_cwd, bk = sys.argv[1:5]
 chan = os.environ.get("OPENCODE_TUI_CHANNEL","latest")
+# The path is RESOLVED BY THE SHELL (tabs_target_path) and exported. This
+# python used to carry its OWN resolver (state root -> channel -> tabs.json,
+# with its own fallbacks) which could name a DIFFERENT file than the one the
+# lock guarded: the lock protected one file and the merge wrote another.
+# There is now ONE resolver; the python only consumes its result and fails
+# closed when it is missing.
 p = os.environ.get("ORCHESTRATE_TABS_JSON")
 if not p:
-    sroot = os.environ.get("OPENCODE_STATE_ROOT") or os.environ.get("ORCHESTRATE_STATE_ROOT","")
-    p = (os.path.join(sroot, chan, "tui", "tabs.json") if sroot
-         else os.path.expanduser(f"~/.local/state/opencode/{chan}/tui/tabs.json"))
+    print("tabs_status=no-tui"); sys.exit(4)
 if not os.path.exists(p):
     print("tabs_status=no-tui"); sys.exit(4)
 f = open(p, "r+")
-if lockmode == "fcntl":
-    import time
-    got = False
-    for _ in range(5):
-        try:
-            import fcntl; fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); got = True; break
-        except OSError:
-            time.sleep(1)
-    if not got:
-        print("tabs_status=lock-fail-closed"); sys.exit(3)
 try:
-    d = json.load(f)
+    d = json.load(f, strict=False)
     # --- schema guard (the real guarantee, not the version number) --------------
     # Before writing, confirm the EXACT shape the merge depends on. If the TUI
     # changed the schema in a new version, we fail closed instead of deforming
@@ -211,7 +555,12 @@ try:
         print("tabs_status=fail-closed-esquema-distinto"); sys.exit(6)
     os.makedirs(bk, exist_ok=True)
     shutil.copyfile(p, os.path.join(bk, "tabs.json.orchbak"))
-    tabs = d.setdefault("cwd", {}).setdefault(tui_cwd, {}).setdefault("tabs", [])
+ #: setdefault "unread" so a cwd scope created by THIS merge also
+    # satisfies the schema guard above. Without it, the next merge fails
+    # closed with "esquema-distinto" (L240) and reports a phantom error.
+    tabs_scope = d.setdefault("cwd", {}).setdefault(tui_cwd, {})
+    tabs = tabs_scope.setdefault("tabs", [])
+    tabs_scope.setdefault("unread", {})
     for t in tabs:
         if t.get("sessionID") == sid:
             if title and t.get("title") != title:
@@ -219,35 +568,124 @@ try:
             break
     else:
         tabs.append({"sessionID": sid, "title": title})
-    # Write through the SAME descriptor that holds the lock. temp + os.replace
-    # was used before, which destroys the inode: the lock ended up on a file
-    # that no longer existed, and two concurrent merges could lose one tab
-    # while BOTH reported ok-verified (S1b-10). We lose rename atomicity but
-    # keep real mutual exclusion, which is what prevents silent loss; the
-    # backup above covers the crash-mid-write case.
+    # Write through the SAME "r+" descriptor, WITHOUT renaming the file. A
+    # temp + os.replace would destroy the inode: the lock held by lock_exec
+    # would end up on a file that no longer existed and two concurrent merges
+    # could lose one tab while BOTH reported ok-verified (S1b-10). We lose
+    # rename atomicity but keep real mutual exclusion, which is what prevents
+    # silent loss; the backup above covers the crash-mid-write case.
     f.seek(0); f.truncate()
     json.dump(d, f, indent=2)
     f.flush()
     os.fsync(f.fileno())
     with open(p) as rb:
-        rt = next((t for t in json.load(rb).get("cwd", {}).get(tui_cwd, {}).get("tabs", [])
+        rt = next((t for t in json.load(rb, strict=False).get("cwd", {}).get(tui_cwd, {}).get("tabs", [])
                    if t.get("sessionID") == sid), None)
         ok = rt is not None
         title_ok = ok and (not title or rt.get("title") == title)
     print("tabs_status=%s" % ("ok-verificada-title" if title_ok else "readback-fail"))
     sys.exit(0 if ok and title_ok else 5)
 finally:
-    if lockmode == "fcntl":
-        try:
-            import fcntl; fcntl.flock(f, fcntl.LOCK_UN)
-        except Exception:
-            pass
     f.close()'
 
 tabs_merge_py_file() {  # emits path to a temp .py with TABS_MERGE_PY
-  _tmf=$(mktemp "${TMPDIR:-/tmp}/tabsmerge.XXXXXX")
-  printf '%s\n' "$TABS_MERGE_PY" > "$_tmf"
+ #: same fail-closed contract as lock_py_file (DRY symmetry): check
+  # mktemp AND the write, and leave a trail when either fails (a bare rc from
+  # `python3 ""` tells the caller nothing).
+  _tmf=$(mktemp "${TMPDIR:-/tmp}/tabsmerge.XXXXXX" 2>/dev/null) || { printf 'tabs_status=fail-closed reason=cannot create the merge helper\n' >&2; return 1; }
+  printf '%s\n' "$TABS_MERGE_PY" > "$_tmf" || { rm -f "$_tmf"; printf 'tabs_status=fail-closed reason=cannot write the merge helper\n' >&2; return 1; }
   printf '%s' "$_tmf"
+}
+
+# tabs_merge_helper -> prints the path of the temp merge helper, or fails
+# closed (rc 2) with the reason. ONE check for EVERY adapter (DRY): only
+# windows-gbash.sh verified the helper, so on darwin/linux/wsl a failed
+# mktemp produced an opaque `python3 ""` error instead of the documented
+# fail-closed reason. Callers use `_pyf=$(tabs_merge_helper) || return 2`.
+tabs_merge_helper() {
+  _tmh=$(tabs_merge_py_file) || return 2
+  if [ -z "$_tmh" ]; then
+    printf 'tabs_status=fail-closed reason=merge-helper-unavailable\n' >&2
+    return 2
+  fi
+  printf '%s' "$_tmh"
+}
+
+# --- tabs merge: the ONE implementation for every OS adapter -----------------
+# The four adapters (darwin, linux, wsl, windows-gbash) used to carry their own
+# copy of this skeleton, and they had DRIFTED: windows-gbash.sh had the arity
+# guard and the others did not (so a wrong arity returned 4 "no-tui" there and
+# 2 "usage" on Git Bash), and windows-gbash.sh had NO "tabs.json must exist"
+# check (so a missing file returned 70, a raw lock error, instead of 4
+# "no-tui"). A guard that exists in ONE adapter and not the others is a defect
+# (the class), and the drift is invisible until someone runs the other
+# OS. Now the skeleton lives HERE and the adapter only declares what is
+# genuinely OS-specific:
+#   os_tabs_extra_check PATH  -> an extra fail-closed check (WSL: drvfs)
+#   os_tabs_adapt_paths       -> path adaptation (Git Bash: cygpath -m)
+#   os_tabs_python_hint       -> extra guidance when python3 is missing
+# A hook is OPTIONAL: the defaults below apply when the adapter does not
+# define it.
+#
+# Exit codes (IDENTICAL on every OS now):
+#   2  usage / no python3 / merge helper unavailable
+#   3  OS-specific fail-closed (WSL: state on drvfs)
+#   4  no TUI storage (no tabs.json)
+#   rc the exit code of the merge itself
+if ! command -v os_tabs_extra_check >/dev/null 2>&1; then
+  os_tabs_extra_check() { return 0; }
+fi
+if ! command -v os_tabs_adapt_paths >/dev/null 2>&1; then
+  # Default: no adaptation. Sets the globals the skeleton uses.
+  os_tabs_adapt_paths() { TABS_PATH="$1"; TABS_HELPER="$2"; }
+fi
+if ! command -v os_tabs_python_hint >/dev/null 2>&1; then
+  os_tabs_python_hint() { :; }
+fi
+os_tabs_merge_shared() {  # SID TITLE TUI_CWD BACKUP_DIR
+  [ $# -eq 4 ] || { printf 'os_tabs_merge: internal usage: SID TITLE TUI_CWD BACKUP_DIR\n' >&2; return 2; }
+  # 1) The tabs.json to operate on (ONE resolver: tabs_target_path). It is
+  #    EXPORTED, so the merge python writes EXACTLY the file locked below.
+  _tabs=$(tabs_target_path) || { printf 'tabs_status=no-tui\n'; return 4; }
+  export ORCHESTRATE_TABS_JSON="$_tabs"
+  # 2) OS-specific fail-closed check (WSL: state on drvfs -> unreliable lock).
+  os_tabs_extra_check "$_tabs" || return $?
+  # 3) python3 (the merge helper and the lock both need it).
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'python3 required for tabs (nothing was written)\n' >&2
+    os_tabs_python_hint
+    return 2
+  }
+  # 3b) The interpreter must have fcntl: the shared lock is python fcntl. The
+  # probe lived ONLY in the Git Bash adapter (where a native python.org
+  # python is on PATH), so the same condition failed closed with rc 2 + a
+  # guidance line there and with rc 70 + a raw lock error everywhere else.
+  # Now the probe is in the shared skeleton: the same rc and message on every
+  # OS. (On darwin/linux/wsl the probe always passes.)
+  python3 -c 'import fcntl' >/dev/null 2>&1 || {
+    printf 'tabs_status=fail-closed (this python3 has no fcntl; e.g. native Windows python on PATH; nothing was written)\n' >&2
+    printf 'Next: put an MSYS2 python3 on PATH, or open the session in the TUI (/sessions or Ctrl+X L) and mark the tab as not verified.\n' >&2
+    return 2
+  }
+  # 4) The merge helper (ONE shared check for every adapter).
+  _pyf=$(tabs_merge_helper) || return 2
+  # 5) OS-specific path adaptation (Git Bash: cygpath -m, so a native Win32
+  #    python can open the file). It happens BEFORE the existence check, so the
+  #    check, the lock and the write all name the SAME file: the check used to
+  #    run on the UNCONVERTED path while the lock and the merge used the
+  #    converted one, and a tabs.json reachable only under the converted path
+  #    was reported as "no-tui" (or, worse, locked one file and wrote another).
+  os_tabs_adapt_paths "$_tabs" "$_pyf"
+  _tabs="$TABS_PATH"; _pyf="$TABS_HELPER"
+  export ORCHESTRATE_TABS_JSON="$_tabs"
+  # 6) The file must exist: no tabs.json -> no-tui. On every OS.
+  [ -f "$_tabs" ] || { printf 'tabs_status=no-tui\n'; return 4; }
+  # DRY: the ONE lock of the skill (lock_exec). It locks exactly the file the
+  # merge writes (ORCHESTRATE_TABS_JSON) and holds it for the whole merge.
+  lock_exec "$_tabs" "${ORCHESTRATE_TABS_LOCK_TIMEOUT:-5}" python3 "$_pyf" "$1" "$2" "$3" "$4"
+  _rc=$?
+  rm -f "$_pyf"
+  return $_rc
 }
 
 die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
@@ -272,6 +710,28 @@ parse_short_id() {
   esac
 }
 
+# tabs_target_path -> prints the tabs.json the skill must operate on:
+# ORCHESTRATE_TABS_JSON when the caller pre-set it (a redirected tabs.json),
+# else tabs_json_path (the SINGLE SOURCE of the discovery).
+#
+# ONE resolver for the four merge adapters, the prune and the merge python
+# (DRY). The same 6-line "if [ -n ... ] else tabs_json_path" block was
+# copy-pasted in linux.sh, wsl.sh, windows-gbash.sh, darwin.sh (inverted) and
+# orchestrate.sh's tabs_prune_ids, and the merge python carried a SIXTH
+# resolver with DIFFERENT rules (no `opencode debug paths state` fallback, no
+# XDG_STATE_HOME default, no channel scan, channel default "latest"). The two
+# could therefore name DIFFERENT files: the lock guarded one and the merge
+# wrote the other -- exactly what the "the lock locks exactly the file the
+# merge writes" comment claims cannot happen.
+# The caller EXPORTS the result, so the python never resolves anything.
+tabs_target_path() {
+  if [ -n "${ORCHESTRATE_TABS_JSON:-}" ]; then
+    printf '%s\n' "$ORCHESTRATE_TABS_JSON"
+    return 0
+  fi
+  tabs_json_path
+}
+
 # tabs_json_path -> prints the ABSOLUTE path of the active TUI's tabs.json.
 # SINGLE SOURCE of the resolution (DRY): before, darwin/tui-detect discovered
 # the channel by glob and honored XDG_STATE_HOME, while linux/wsl/windows
@@ -280,11 +740,12 @@ parse_short_id() {
 # mechanism.
 # Exit 4 = no TUI with storage (the caller reports no-tui).
 tabs_json_path() {
-  SR=${OPENCODE_STATE_ROOT:-}
-  if [ -z "$SR" ] && command -v opencode >/dev/null 2>&1; then
-    SR=$(opencode debug paths state 2>/dev/null | head -1)
-  fi
-  [ -n "$SR" ] || SR="${XDG_STATE_HOME:-$HOME/.local/state}/opencode"
+  # The state root comes from the ONE resolver (state_root in os/_paths.sh):
+  # OPENCODE_STATE_ROOT > ORCHESTRATE_STATE_ROOT > the CLI registry > XDG.
+  # The merge python used to carry its own resolution with DIFFERENT rules
+  # (no CLI fallback, no XDG default, no channel scan), so the lock and the
+  # merge could name different files.
+  SR=$(state_root)
   if [ -n "${OPENCODE_TUI_CHANNEL:-}" ] && [ -f "$SR/$OPENCODE_TUI_CHANNEL/tui/tabs.json" ]; then
     printf '%s\n' "$SR/$OPENCODE_TUI_CHANNEL/tui/tabs.json"; return 0
   fi
@@ -293,6 +754,36 @@ tabs_json_path() {
     if [ -f "$c/tui/tabs.json" ]; then printf '%s\n' "$c/tui/tabs.json"; return 0; fi
   done
   return 4
+}
+
+# session_state OUT IDLE UPDATED CREATED HAS_OUTCOME -> "idle" | "running" | "empty"
+# SINGLE SOURCE of the pool-state derivation (F1/F2/F3: one root cause, one
+# helper; pool_list and sub_wait_idle BOTH call it). Before, the rule was
+# inline in pool_list (`idle if idle and updated and idle>=updated else
+# running`): a session created by create-worker has NEITHER time.idle NOR any
+# activity, so it was classified `running`, dispatch refused its FIRST prompt
+# (bootstrap deadlock: create-worker -> dispatch exited 1 "not idle") and
+# pool/wait-idle lied about brand-new workers. Truthful states:
+#   idle    - time.idle exists and is not older than time.updated (finished).
+#   running - any activity without idle: output tokens, an outcome, a stale
+#             idle (no updated to compare), or time.updated > time.created
+#             (a prompt was received). This is the fail-closed collision
+#             guard: dispatch refuses it and it is never overwritten.
+#   empty   - created but never used (out=0, no outcome, no idle,
+#             updated <= created): dispatchable (it needs its FIRST prompt)
+#             and reusable (it has no prior work to lose).
+# Non-numeric input normalizes to 0; the parsers only emit digits.
+session_state() {
+  _ssn() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
+  _ss_o=$(_ssn "${1:-0}"); _ss_i=$(_ssn "${2:-0}")
+  _ss_u=$(_ssn "${3:-0}"); _ss_c=$(_ssn "${4:-0}")
+  if [ "$_ss_i" -gt 0 ] && [ "$_ss_u" -gt 0 ] && [ "$_ss_i" -ge "$_ss_u" ]; then
+    printf 'idle\n'
+  elif [ "$_ss_o" -gt 0 ] || [ "${5:-0}" = "1" ] || [ "$_ss_i" -gt 0 ] || [ "$_ss_u" -gt "$_ss_c" ]; then
+    printf 'running\n'
+  else
+    printf 'empty\n'
+  fi
 }
 
 # pool_list -> "ordinal<TAB>name<TAB>state<TAB>slug<TAB>sid<TAB>out<TAB>parent" lines.
@@ -308,14 +799,31 @@ pool_list() {
   # portable, robust to bracket mismatches and the closure-quirks of nawk.
   # Uses api_get_all_pages (DRY: same pagination as sub_sessions and
   # sub_session_id) so >50 sessions do not silently miss dedup matches.
-  RESP=$(api_get_all_pages /api/session) || return 3
+  #
+  # The query is FILTERED BY PROJECT: GET /api/session accepts `directory` and
+  # `project`. Without the filter the pool query downloaded the WHOLE catalog
+  # of the instance (thousands of sessions, 50 per page -> 30+ requests, the
+  # pagination cap) and then filtered it client-side, which is slow and fails
+  # intermittently on a big instance -- the run died with "could not query the
+  # worker pool". The client-side filter stays as a safety net: the server
+  # filter is a narrowing, not a trust boundary.
+  RESP=$(project_sessions_json) || return 3
   [ -n "$RESP" ] || return 3
-  # Columns: ordinal<TAB>name<TAB>state<TAB>slug<TAB>sid<TAB>out<TAB>parent
-  # 7 columns; `d == d` filter for the project directory.
+  # F1/F3: the STATE column is derived by session_state (ONE helper, shared
+  # with sub_wait_idle/F2). The python stage emits the RAW fields as
+  # ordinal<TAB>name<TAB>slug<TAB>sid<TAB>out<TAB>parent<TAB>idle<TAB>
+  # updated<TAB>created<TAB>outcome_flag; a shell loop computes state and
+  # re-emits the canonical 7-column layout below (state stays column 3, sid
+  # 5, out 6, parent 7: find_dedup, sub_dispatch, sub_pool and init-run keep
+  # their contract). `out` also reads tokens.output as a fallback: 2.0.32's
+  # /api/session LIST no longer emits top-level `output` (only
+  # tokens.output), so `s.get('output', 0)` was always 0 and the dedup
+  # collision guard could never see prior work; the fallback restores the
+  # fail-closed round-5 semantics (out > 0 and no time.idle => running).
   printf '%s' "$RESP" | python3 -c "
 import json, sys, re
 d = sys.argv[1]
-data = json.loads(sys.stdin.read()).get('data', [])
+data = json.loads(sys.stdin.read(), strict=False).get('data', [])
 for s in data:
     loc = s.get('location', {}).get('directory', '')
     if loc != d:
@@ -324,22 +832,33 @@ for s in data:
     m = re.match(r'^\[(\d+)\](?:s\[(\d+)\])?\s+(.*)$', title)
     if not m:
         continue
-    ord = int(m.group(1))
-    parent = m.group(2) if m.group(2) is not None else ''
-    sid = s.get('id', '')
-    out = s.get('output', 0)
-    nm = m.group(3)  # capture properly
-    idle = s.get('time', {}).get('idle', 0)
-    updated = s.get('time', {}).get('updated', 0)
-    st = 'idle' if idle and updated and idle >= updated else 'running'
-    print('\t'.join([str(ord), nm, st, re.sub(r'[ \t]', '', nm), sid, str(out), str(parent)]))
-" "$PROJ_DIR" | sort -t'	' -k7,7 -k1,1n
+    tm = s.get('time', {}) or {}
+    out = s.get('output', 0) or (s.get('tokens', {}) or {}).get('output', 0) or 0
+    nm = m.group(3)
+    print('\t'.join([str(int(m.group(1))), nm, re.sub(r'[ \t]', '', nm), s.get('id', ''),
+                     str(out), m.group(2) or '',
+                     str(tm.get('idle', 0) or 0), str(tm.get('updated', 0) or 0),
+                     str(tm.get('created', 0) or 0), '1' if s.get('outcome') else '0']))
+" "$PROJ_DIR" | while IFS= read -r _row; do
+    [ -n "$_row" ] || continue
+    _col() { printf '%s' "$_row" | cut -f"$1"; }
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(_col 1)" "$(_col 2)" \
+      "$(session_state "$(_col 5)" "$(_col 7)" "$(_col 8)" "$(_col 9)" "$(_col 10)")" \
+      "$(_col 3)" "$(_col 4)" "$(_col 5)" "$(_col 6)"
+  done | sort -t'	' -k7,7 -k1,1n
 }
 
 
-# pool_max_ordinal -> highest deployed ordinal (0 if the pool is empty).
+# pool_max_ordinal POOL -> the highest ordinal deployed in POOL (0 when empty).
+# POOL is the tab-separated output of pool_list and is PASSED IN, not fetched
+# here. Before, this ran its own SECOND api call and the failure was swallowed:
+# `pool_list | awk ...` keeps the awk exit code, so pool_list's `|| return 3`
+# was invisible and a failed fetch read as "max=0" (empty pool). The next
+# worker then took ordinal 01, which was already deployed -> two workers with
+# the same [NN]. One fetch, one derivation (DRY).
 pool_max_ordinal() {
-  pool_list | awk -F'\t' 'BEGIN{m=0}{if($1+0>m)m=$1+0}END{print m}'
+  printf '%s\n' "$1" | awk -F'\t' 'BEGIN{m=0}{if($1+0>m)m=$1+0}END{print m}'
 }
 
 # --- version comparison (POSIX, no sort -V: BSD sort lacks it) -------------------
@@ -409,10 +928,23 @@ worker_list() {
 }
 
 # --- session creation (shared by ensure-root and create-worker; DRY) -----------
+# model_pair_assert PAIR -> dies unless PAIR is a valid id@provider (portable
+# sh case-match; no regex(3) dependency).: preflight refuses to CACHE a
+# bogus pair; this re-validates at the POINT OF USE so a tampered/poisoned
+# model_default (or --model) cannot create a session that silently ends in
+# outcome=failed with 0 tokens. Same refusal wording family as preflight.
+model_pair_assert() {
+  _ok=""; _id="${1%@*}"; _prov="${1#*@}"
+  [ "$1" != "$_prov" ] && [ -n "$_id" ] && [ -n "$_prov" ] && [ "$_id" = "${_id#*@}" ] && _ok=1
+  case "${_id}@${_prov}" in *[!A-Za-z0-9._:/@-]*|none@none|null@null) _ok="" ;; esac
+  [ -n "$_ok" ] && return 0
+  die "model pair '$1' is not a valid id@provider; refusing to use a bogus model_default (fix: orchestrate.sh preflight, or --model id@prov)"
+}
 # session_body TITLE AGENT MODEL -> JSON for POST /api/session (nothing hardcoded)
 session_body() {  # $1=title $2=agent $3=model(id@prov|empty)
   _t=$(printf '%s' "$1" | json_escape); _d=$(printf '%s' "$PROJ_DIR" | json_escape)
-  _a="${2:-build}"; _m="$3"
+ _a=$(printf '%s' "${2:-build}" | json_escape) #: agent reached shell via --agent from caller; must be escaped
+  _m="$3"
   MID="${_m%@*}"; MPROV="${_m#*@}"
   if [ -z "$_m" ] || [ "$MID" = "$MPROV" ]; then
     # The cache key is `model_default` (the one preflight.sh writes). Before,
@@ -422,30 +954,38 @@ session_body() {  # $1=title $2=agent $3=model(id@prov|empty)
     # and outcome=failed. The old name is accepted as a fallback for old caches.
     D=$(cache_get model_default)
     [ -n "$D" ] || D=$(cache_get default_model)
-    MID="${D%@*}"; MPROV="${D#*@}"
+ model_pair_assert "$D" #: poison never reaches the POST body
+ #: cached model pair escapes too (poisoned server response could
+    # try to break out of the JSON).
+    MID=$(printf '%s' "${D%@*}" | json_escape); MPROV=$(printf '%s' "${D#*@}" | json_escape)
+  else
+ model_pair_assert "$_m" #: explicit --model is validated too
+    MID=$(printf '%s' "$MID" | json_escape); MPROV=$(printf '%s' "$MPROV" | json_escape)
   fi
   printf '{"title":"%s","agent":"%s","model":{"id":"%s","providerID":"%s"},"location":{"directory":"%s"}}' \
     "$_t" "$_a" "$MID" "$MPROV" "$_d"
 }
 
-# find_dedup TITLE -> "id out" if a session with that title exists (compared
+# find_dedup TITLE -> "id out state" if a session with that title exists (compared
 # by slug) in the project; empty if there is no match.
 #
 # The slug deliberately ignores the [NN] ordinal. "Vermithrax" and
 # "[01] Vermithrax" are the SAME worker: if the slug included the brackets,
-# searching by name would never find the numbered session and init-run
-# created duplicates. The ordinal is ordering decoration; the identity is the
-# name.
+# searching by name would never find the numbered session and init-run created
+# duplicates. The ordinal is ordering decoration; the identity is the name.
+# F1: the third field is the session_state value, so dedup_guard can refuse a
+# RUNNING match even while its output is still 0 (a prompt in flight, out not
+# yet grown) instead of silently "reusing" a live session.
 find_dedup() {
   # Thin filter over pool_list (SINGLE SOURCE of the fetch: DRY). Returns the
-  # "id out" of the session whose title matches by slug ignoring the ordinal —
-  # "Vermithrax" finds "[01] Vermithrax" — or nothing if there is no match.
-  # rc 3 = the pool could not be queried: the caller must fail closed.
+  # "id out state" of the session whose title matches by slug ignoring the
+  # ordinal — "Vermithrax" finds "[01] Vermithrax" — or nothing if there is
+  # no match. rc 3 = the pool could not be queried: the caller must fail closed.
   POOL=$(pool_list) || return 3
   printf '%s\n' "$POOL" | awk -F'\t' -v t="$1" '
       function slug(s, x) { x = s; sub(/^\[[0-9]+\][ \t]*/, "", x); gsub(/[ \t]/, "", x); return x }
       BEGIN { t = slug(t) }
-      $4 == t { print $5, $6; exit }'
+      $4 == t { print $5, $6, $3; exit }'
 }
 
 # dedup_guard TITLE: single anti-overwrite guard for ensure-root and create-worker.
@@ -454,7 +994,9 @@ find_dedup() {
 # contract:
 #   0 + stdout "worker_id=..." -> inert session reused (the caller uses it).
 #   1 -> no match (nor --force-new): create a new one.
-#   2 + stdout "COLLISION out=N" -> title with prior work: the CALLER dies.
+#   2 + stdout "COLLISION out=N state=<running|prior-work>" -> the matched
+#       session is not reusable (it is genuinely running, F1 state derivation,
+#       or it has prior work): the CALLER dies. Fail-closed is unchanged.
 dedup_guard() {
   [ "${FORCE_NEW:-0}" -eq 1 ] && return 1
   HIT=$(find_dedup "$1"); DRC=$?
@@ -463,17 +1005,25 @@ dedup_guard() {
   # is NOT created and the run stops.
   [ "$DRC" -eq 3 ] && return 3
   [ -n "$HIT" ] || return 1
-  EX_ID=${HIT%% *}; EX_OUT=${HIT#* }
+  EX_ID=${HIT%% *}; EX_REST=${HIT#* }; EX_OUT=${EX_REST%% *}; EX_ST=${EX_REST#* }
+  if [ "$EX_ST" = "running" ]; then
+    printf 'COLLISION out=%s state=running id=%s\n' "$EX_OUT" "$EX_ID"
+    return 2
+  fi
   if [ "${EX_OUT:-0}" = "0" ]; then
     printf 'worker_id=%s\ndedup=1 inert-session-reused\n' "$EX_ID"
     return 0
   fi
-  printf 'COLLISION out=%s\n' "$EX_OUT"
+  printf 'COLLISION out=%s state=prior-work id=%s\n' "$EX_OUT" "$EX_ID"
   return 2
 }
 
 # post_new_session BODY -> emits worker_id=/location=/parentID=null (validated)
 post_new_session() {
+ # companion: session_body dies inside its $(...) subshell when the model
+  # pair is bogus and emits NO body; never POST emptiness to the serve
+  # (fail-closed; an empty body could fall back to a server default).
+  [ -n "$1" ] || die 'empty session body (bogus model pair? see the error above)'
   AUTH=$(auth_flag 2>/dev/null || printf '')
   RESP=$(http_post_json "$(cache_get endpoint)/api/session" "$1") || die 'POST /api/session failed'
   ID=$(printf '%s' "$RESP" | json_get_field id)
@@ -483,7 +1033,10 @@ post_new_session() {
   # created).
   [ -n "$ID" ] && [ "${ID#ses_}" != "$ID" ] || die 'POST /api/session returned no ses_* sessionID; no usable session was created'
   PARENT=$(printf '%s' "$RESP" | json_get_field parentID)
-  LOC=$(printf '%s' "$RESP" | json_get_field directory)
+  # decode JSON \\ escapes: on windows-gbash the echoed directory is
+  # "C:\\Users\\..." while $PROJ_DIR holds single backslashes; without the
+ # decode every create-worker would die on location mismatch.
+  LOC=$(printf '%s' "$RESP" | json_get_field directory | sed 's/\\\\/\\/g')
   [ -z "$PARENT" ] || [ "$PARENT" = "null" ] || die "expected null parentID; got $PARENT"
   [ "$LOC" = "$PROJ_DIR" ] || die "location mismatch: $LOC != $PROJ_DIR"
   printf 'worker_id=%s\nlocation=%s\nparentID=null\n' "$ID" "$LOC"

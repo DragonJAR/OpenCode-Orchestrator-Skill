@@ -1,41 +1,32 @@
 #!/bin/sh
-# Windows Git Bash (MINGW/MSYS/CYGWIN): no flock(1); lock via python fcntl if the
-# python is MSYS2 (modern MSYS2 supports it; if it fails, fail-closed -> manual TUI).
+# Windows Git Bash (MINGW/MSYS/CYGWIN): no flock(1); the lock is the shared one
+# (lock_exec -> python fcntl, with a fail-closed guard when the interpreter has
+# no fcntl -- e.g. a native python.org python on PATH -> manual TUI).
 # PROJ_DIR is normalized to a literal Windows path with cygpath -w (JSON-escaped when the body is built).
+#
+# The merge is the ONE shared implementation (os_tabs_merge_shared in
+# os/_common.sh). Git Bash declares only what is genuinely OS-specific: the
+# fcntl probe, the operator guidance and the cygpath adaptation.
 os_project_dir() {
   if command -v cygpath >/dev/null 2>&1; then cygpath -w "$(pwd -P)"; else pwd -P; fi
 }
-os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
-  [ $# -eq 4 ] || { printf 'os_tabs_merge: internal usage: SID TITLE TUI_CWD BACKUP_DIR\n' >&2; return 2; }
-  command -v python3 >/dev/null 2>&1 || {
-    printf 'python3 not found; tabs on Git Bash requires it (fail-closed; nothing was written).\n' >&2
-    printf 'Next: install MSYS2 python3 (pacman -S mingw-w64-ucrt-x86_64-python3) and retry "orchestrate-windows.sh attach-tabs --session <ID> --tui-cwd <PATH>", or open the session in the TUI (/sessions or Ctrl+X L) and mark the tab as not verified.\n' >&2
-    return 2
-  }
-  # A6: a native Windows python3 (python.org) on PATH has no fcntl. Its
-  # traceback would exit with rc=1 and the friendly message would never be
-  # emitted because the python script only exits 0/3/4/5. Probe before launching
-  # the merge.
-  python3 -c 'import fcntl' >/dev/null 2>&1 || {
-    printf 'tabs_status=fail-closed (this python3 has no fcntl; e.g. native Windows python on PATH; nothing was written)\n' >&2
-    printf 'Next: put an MSYS2 python3 on PATH, or open the session in the TUI (/sessions or Ctrl+X L) and mark the tab as not verified.\n' >&2
-    return 2
-  }
-  _pyf=$(tabs_merge_py_file)
-  [ -n "$_pyf" ] || { printf 'os_tabs_merge: could not create the temporary python helper\n' >&2; return 2; }
-  # 1) Resolves the tabs.json path (tabs_json_path, SINGLE SOURCE).
-  _tj=$(tabs_json_path) || { printf 'tabs_status=no-tui\n'; return 4; }
-  export ORCHESTRATE_TABS_JSON="$_tj"
-  # 2) THEN convert to drive format: a native Win32 python cannot open MSYS
-  #    paths (/tmp/..., /c/...). cygpath -m produces C:/a/b (slashes, no
-  #    escapes). Without cygpath it is left as is (MSYS2 python understands them).
+# The fcntl probe lives in the shared skeleton (os_tabs_merge_shared): the same
+# condition must fail closed with the same rc and message on every OS, and a
+# guard that existed in ONE adapter was a defect (the class).
+os_tabs_python_hint() {
+  printf 'Next: install MSYS2 python3 (pacman -S mingw-w64-ucrt-x86_64-python3) and retry "orchestrate-windows.sh attach-tabs --session <ID> --tui-cwd <PATH>", or open the session in the TUI (/sessions or Ctrl+X L) and mark the tab as not verified.\n' >&2
+}
+# os_tabs_adapt_paths TABS HELPER -> converts BOTH paths to the drive format:
+# a native Win32 python cannot open MSYS paths (/tmp/..., /c/...). cygpath -m
+# produces C:/a/b (slashes, no escapes). Without cygpath they are left as is
+# (MSYS2 python understands them).
+os_tabs_adapt_paths() {
+  TABS_PATH="$1"; TABS_HELPER="$2"
   if command -v cygpath >/dev/null 2>&1; then
-    _pyf=$(cygpath -m "$_pyf")
-    ORCHESTRATE_TABS_JSON=$(cygpath -m "$ORCHESTRATE_TABS_JSON")
-    export ORCHESTRATE_TABS_JSON
+    TABS_PATH=$(cygpath -m "$TABS_PATH")
+    TABS_HELPER=$(cygpath -m "$TABS_HELPER")
   fi
-  python3 "$_pyf" "$1" "$2" "$3" "$4" fcntl
-  _rc=$?
-  rm -f "$_pyf"
-  return $_rc
+}
+os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR
+  os_tabs_merge_shared "$@"
 }

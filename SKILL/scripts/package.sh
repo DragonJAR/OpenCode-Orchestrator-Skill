@@ -15,9 +15,13 @@ set -eu
 
 PACKAGE_NAME="opencode-orchestrator-skill" # must match the frontmatter `name`
 SOURCE_ROOT="$(pwd -P)/SKILL"
-test -d "$SOURCE_ROOT" || { printf 'ERROR: SKILL/ no encontrado en %s; ejecuta desde la raíz del workspace.\n' "$SOURCE_ROOT" >&2; exit 2; }
+test -d "$SOURCE_ROOT" || { printf 'ERROR: SKILL/ not found in %s; run this from the workspace root.\n' "$SOURCE_ROOT" >&2; exit 2; }
 
 # --- Closed list (single source of truth; last entry = self-inclusion) --------
+# The closed list covers EVERY file that ships. It used to list only 2 of the
+# 22 eval fixtures, so the packaged smoke harness referenced files that were
+# not in the ZIP: every user of the package got a broken eval suite. The
+# guard below makes that drift impossible to reintroduce.
 PACKAGE_FILES='
 SKILL.md
 LICENSE
@@ -44,6 +48,7 @@ scripts/orchestrate-wsl.sh
 scripts/orchestrate-windows.sh
 scripts/orchestrate.sh
 scripts/os/_common.sh
+scripts/os/_paths.sh
 scripts/os/darwin.sh
 scripts/os/linux.sh
 scripts/os/tui-detect.sh
@@ -59,20 +64,29 @@ scripts/watch_run.sh
 
 check_source_dir() {
   if [ -L "$1" ] || [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
-    printf 'Fuente no válida (directorio accesible sin enlace simbólico): %s\n' "$1" >&2
+    printf 'ERROR: invalid source (directory reachable, not a symlink): %s\n' "$1" >&2
     exit 1
   fi
 }
 check_source_file() {
   if [ -L "$1" ] || [ ! -f "$1" ] || [ ! -r "$1" ]; then
-    printf 'Fuente no válida (archivo regular legible y sin enlace simbólico): %s\n' "$1" >&2
+    printf 'ERROR: invalid source (regular readable file, not a symlink): %s\n' "$1" >&2
     exit 1
   fi
 }
 
 for c in zip zipinfo unzip sort cmp; do
-  command -v "$c" >/dev/null 2>&1 || { printf 'ERROR: dependencia no disponible: %s\n' "$c" >&2; exit 2; }
+  command -v "$c" >/dev/null 2>&1 || { printf 'ERROR: required dependency not available: %s\n' "$c" >&2; exit 2; }
 done
+
+# Guard: the regression suite is MAINTAINER-INTERNAL and must NOT ship. The
+# closed list used to carry only 2 of its fixtures, so the published package
+# referenced files it did not contain; excluding the suite entirely removes
+# the class of problem instead of tracking it.
+if printf '%s\n' "$PACKAGE_FILES" | grep -q '^scripts/evals/'; then
+  printf 'ERROR: the closed list contains the internal regression suite; it must not be published\n' >&2
+  exit 1
+fi
 
 check_source_dir "$SOURCE_ROOT/references"
 check_source_dir "$SOURCE_ROOT/scripts"
@@ -101,8 +115,14 @@ printf '%s\n' "$PACKAGE_FILES" | awk 'NF{print}' | while IFS= read -r rel; do
   printf '%s\n' "$PACKAGE_NAME/$rel" >> "$EXPECTED_ENTRIES"
 done
 
-PACKAGE_ZIP="$PACKAGE_WORK/package.zip"
-test ! -e "$PACKAGE_ZIP" || { printf '%s\n' "El destino ya existe: $PACKAGE_ZIP" >&2; exit 1; }
+PACKAGE_ZIP="$(pwd -P)/dist/$PACKAGE_NAME.zip"
+# The ZIP is written OUTSIDE the staging dir: the EXIT trap removes
+# PACKAGE_WORK, so a ZIP inside it was deleted the moment the script printed
+# its path (the recipe produced no durable artifact at all).
+# It lands in dist/ and is rebuilt fresh every run: zip MERGES into an
+# existing archive, so a stale entry would survive a rebuild.
+mkdir -p "$(dirname "$PACKAGE_ZIP")" 2>/dev/null || true
+rm -f "$PACKAGE_ZIP"
 (cd "$PACKAGE_STAGE" && zip -q -X -r "$PACKAGE_ZIP" "$PACKAGE_NAME")
 
 unzip -t "$PACKAGE_ZIP" >/dev/null
@@ -113,12 +133,12 @@ zipinfo -1 "$PACKAGE_ZIP" > "$ACTUAL_ENTRIES"
 LC_ALL=C sort "$EXPECTED_ENTRIES" > "$EXPECTED_SORTED"
 LC_ALL=C sort "$ACTUAL_ENTRIES" > "$ACTUAL_SORTED"
 if ! cmp -s "$EXPECTED_SORTED" "$ACTUAL_SORTED"; then
-  printf '%s\n' 'El contenido del ZIP no coincide con la lista cerrada.' >&2
-  printf '%s\n' 'Esperado:' >&2
+  printf '%s\n' 'ERROR: the ZIP contents do not match the closed list.' >&2
+  printf '%s\n' 'Expected:' >&2
   cat "$EXPECTED_SORTED" >&2
-  printf '%s\n' 'Encontrado:' >&2
+  printf '%s\n' 'Found:' >&2
   cat "$ACTUAL_SORTED" >&2
   exit 1
 fi
 
-printf 'ZIP creado en %s\n' "$PACKAGE_ZIP"
+printf 'ZIP created at %s\n' "$PACKAGE_ZIP"
