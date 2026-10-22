@@ -75,7 +75,7 @@ check_source_file() {
   fi
 }
 
-for c in zip zipinfo unzip sort cmp; do
+for c in python3 sort cmp; do
   command -v "$c" >/dev/null 2>&1 || { printf 'ERROR: required dependency not available: %s\n' "$c" >&2; exit 2; }
 done
 
@@ -123,13 +123,34 @@ PACKAGE_ZIP="$(pwd -P)/dist/$PACKAGE_NAME.zip"
 # existing archive, so a stale entry would survive a rebuild.
 mkdir -p "$(dirname "$PACKAGE_ZIP")" 2>/dev/null || true
 rm -f "$PACKAGE_ZIP"
-(cd "$PACKAGE_STAGE" && zip -q -X -r "$PACKAGE_ZIP" "$PACKAGE_NAME")
+# The archive is built and inspected with the python standard library:
+# `zip`, `zipinfo` and `unzip` are NOT part of Git for Windows, so the
+# packaging step only worked on macOS and Linux. python3 is already a
+# documented requirement of the skill, and ONE implementation behaves the
+# same on the three platforms.
+python3 - "$PACKAGE_STAGE" "$PACKAGE_NAME" "$PACKAGE_ZIP" <<'PYZIP' || exit 1
+import os, sys, zipfile
+stage, name, out = sys.argv[1], sys.argv[2], sys.argv[3]
+root = os.path.join(stage, name)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        rel = os.path.relpath(dirpath, stage)
+        if rel != ".":
+            z.writestr(rel.replace(os.sep, "/") + "/", "")
+        for f in sorted(filenames):
+            z.write(os.path.join(dirpath, f), os.path.join(rel, f).replace(os.sep, "/"))
+PYZIP
 
-unzip -t "$PACKAGE_ZIP" >/dev/null
 ACTUAL_ENTRIES="$PACKAGE_WORK/actual-entries.txt"
 EXPECTED_SORTED="$PACKAGE_WORK/expected-sorted.txt"
 ACTUAL_SORTED="$PACKAGE_WORK/actual-sorted.txt"
-zipinfo -1 "$PACKAGE_ZIP" > "$ACTUAL_ENTRIES"
+python3 - "$PACKAGE_ZIP" > "$ACTUAL_ENTRIES" <<'PYLIST' || exit 1
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for n in z.namelist():
+        print(n)
+PYLIST
 LC_ALL=C sort "$EXPECTED_ENTRIES" > "$EXPECTED_SORTED"
 LC_ALL=C sort "$ACTUAL_ENTRIES" > "$ACTUAL_SORTED"
 if ! cmp -s "$EXPECTED_SORTED" "$ACTUAL_SORTED"; then
