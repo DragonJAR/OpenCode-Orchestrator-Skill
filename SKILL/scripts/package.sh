@@ -75,7 +75,7 @@ check_source_file() {
   fi
 }
 
-for c in python3 sort cmp; do
+for c in python3 sort; do
   command -v "$c" >/dev/null 2>&1 || { printf 'ERROR: required dependency not available: %s\n' "$c" >&2; exit 2; }
 done
 
@@ -153,7 +153,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 PYLIST
 LC_ALL=C sort "$EXPECTED_ENTRIES" > "$EXPECTED_SORTED"
 LC_ALL=C sort "$ACTUAL_ENTRIES" > "$ACTUAL_SORTED"
-if ! cmp -s "$EXPECTED_SORTED" "$ACTUAL_SORTED"; then
+# The comparison uses the SHELL, not cmp(1): Git for Windows does not ship
+# cmp, so `cmp -s` failed with "command not found" and the check reported a
+# content mismatch that did not exist.
+if [ "$(cat "$EXPECTED_SORTED")" != "$(cat "$ACTUAL_SORTED")" ]; then
   printf '%s\n' 'ERROR: the ZIP contents do not match the closed list.' >&2
   printf '%s\n' 'Expected:' >&2
   cat "$EXPECTED_SORTED" >&2
