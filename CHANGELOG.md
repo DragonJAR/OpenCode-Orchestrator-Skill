@@ -8,15 +8,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [1.5.0] - 2026-10-22
 
-Audit and hardening release. A line-by-line read of every script and every
-reference document of the package, plus a sweep that looked for each defect
-class in every other place it could occur. Every entry below names the
-observable symptom the defect produced, not the mechanism that fixed it.
+Audit and hardening release: a line-by-line read of every script and every
+reference document of the package, a sweep that looked for each defect class
+in every other place it could occur, and the rewrite of the public
+documentation around what the skill actually does.
 
 ### Fixed
-A full line-by-line audit of the package (every script, every reference
-document) and a sweep that looked for each defect class in every other place
-it could occur. Each entry below names the observable symptom.
+Each entry below names the observable symptom the defect produced, not the
+mechanism that fixed it.
 
 **A flag without a value hung the process.**
 `shift 2` with fewer than two arguments left does not advance the argument list
