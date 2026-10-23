@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-22
+
+Patch release over v1.5.0. Three paths that used to fail open now fail closed, the
+JSON extraction formula lives in one place, and the CI step that exercises the
+Windows line endings finds the shared library again.
+
 ### Fixed
 **The cache could be split in two by a permission error.**
 The cache directory is derived from the project hash, and `preflight.sh` and
@@ -36,6 +42,27 @@ the caller read them as the WHOLE list. That is the same class as the
 truncated-list defect of 1.5.0 (the pool then reads "max ordinal 0" and the
 next worker reuses `[01]`). Reaching the cap with a page still pending is
 now fatal, exactly like a malformed page.
+
+**The CI could not find the shared library the extraction depends on.**
+`os/_common.sh` is SOURCED, so `$0` inside it is the path of the script that
+sourced it, not its own. The shared awk library (`scripts/_json.awk`) is therefore
+located from what the CALLER knows: the real callers export `SELF_DIR`, and the
+regression fixtures rely on their own directory. The CI step that checks the Windows
+line endings sourced the file directly and exported nothing, so the library was
+looked up in the shell's own directory and one level above it, where it does not
+exist, and the step failed closed with "shared awk library missing" on all three
+runners. The step now exports `SELF_DIR` like the real callers do, which also makes
+it load the per-OS adapter and exercise the real resolution instead of a crippled
+one.
+
+**The CI step that checks the Windows line endings could not fail.**
+The step forces python to emit CRLF and then asserts that the values the shell
+reads are clean — but it asserted them on `json_get_field`, which is pure awk and
+could never carry a CR. The defect the step was written for (a value read from
+python arriving with a stray CR) lives in the `py` helper, and the step never
+called it: the guard would have passed with the defect reintroduced. The step now
+exercises `py` itself. Checked both ways — reintroducing the defect makes the step
+fail, and it passes again once the fix is back.
 
 ### Changed
 **The same JSON extraction was written four times, and the copies differed.**
@@ -430,7 +457,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...v1.5.0
 [1.0.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.0...v1.0.1

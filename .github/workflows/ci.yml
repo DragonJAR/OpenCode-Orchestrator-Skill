@@ -71,12 +71,27 @@ jobs:
           printf '%s\n' '#!/bin/sh' "export PYTHONPATH=\"$SITE:\${PYTHONPATH:+:\$PYTHONPATH}\"" "exec \"$REAL_PY\" \"\$@\"" > "$BIN/python3"
           chmod +x "$BIN/python3"
           PATH="$BIN:$PATH"; export PATH
+          # os/_common.sh is SOURCED, so $0 is THIS shell's path, not the
+          # library's directory. The shared awk library (scripts/_json.awk) is
+          # located from what the CALLER knows: the real callers export
+          # SELF_DIR, and this step has to do the same or the library is not
+          # found and the extraction fails closed. Exporting it also loads the
+          # per-OS adapter, so this step exercises the real resolution.
+          SELF_DIR="$(cd SKILL/scripts && pwd)"; export SELF_DIR
           . SKILL/scripts/os/_paths.sh
           . SKILL/scripts/os/_common.sh
+          # The CR contamination lives in the path that READS python's output:
+          # the `py` helper, which is where the defect actually was. The
+          # extraction below is pure awk and could never carry a CR, so
+          # checking it here proved nothing; `py` is the thing under test.
+          v=$(py -c 'print("ses_x")')
+          [ "$v" = "ses_x" ] || { echo "CR contamination in a value read from python: [$v]"; exit 1; }
+          n=$(py -c 'print(7)')
+          [ "$n" = "7" ] || { echo "CR contamination in a number read from python: [$n]"; exit 1; }
           v=$(printf '{"id":"ses_x","n":7}' | json_get_field id)
-          [ "$v" = "ses_x" ] || { echo "CR contamination in the extracted value: [$v]"; exit 1; }
+          [ "$v" = "ses_x" ] || { echo "wrong extracted value: [$v]"; exit 1; }
           n=$(printf '{"id":"ses_x","n":7}' | json_get_field n)
-          [ "$n" = "7" ] || { echo "CR contamination in the extracted number: [$n]"; exit 1; }
+          [ "$n" = "7" ] || { echo "wrong extracted number: [$n]"; exit 1; }
           echo "CRLF proxy PASS"
       # Note: validate_dag.sh and validate_ledger_closed.sh require a
       # ledger fixture under runs/, which is gitignored (the directory
