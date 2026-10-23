@@ -37,6 +37,22 @@ RULES = [
      "curl took '-u opencode:<password>' as one token with a space inside and answered 401"),
     ("R12", "raw python whose output the shell reads",
      "on Windows every value read from python carried a stray CR and corrupted the comparison"),
+    ("R13", "bash-only construct in a script that declares POSIX sh",
+     "the CI only linted in bash mode, so a bashism reached a dash runner and broke there only"),
+    ("R14", "the JSON offset formula outside the shared library",
+     "the same extraction was written four times and the copies had already drifted"),
+    ("R15", "a JSON parse that refuses control characters inside strings",
+     "the serve emits a literal newline inside a JSON string and the parse failed"),
+    ("R16", "the CI using a file that is not published",
+     "a fixture under runs/ is gitignored, so the checkout the CI sees never had it"),
+    ("R17", "the same function body in two shipped files",
+     "a copy that answers a different question answers it wrong somewhere"),
+    ("R18", "a random directory as a fallback for a shared path",
+     "the cache split in two: preflight wrote the password into one directory and the run read from another"),
+    ("R19", "a query parameter that can be empty",
+     "an empty parameter is a different query: the whole catalog instead of the project's"),
+    ("R20", "docs invoking bash over a #!/bin/sh script",
+     "the documented command contradicts the declared POSIX compatibility"),
 ]
 
 
@@ -366,10 +382,253 @@ def rule_r12(root, shipped, repo_files):
     return hits
 
 
+# A rule that cannot run (missing tool) returns SKIP. It is reported as
+# SKIPPED, never as clean: a rule that silently watches nothing is worse
+# than no rule.
+SKIP = "SKIP"
+
+
+def rule_r13(root, shipped, repo_files):
+    """bash-only construct in a script that declares POSIX sh.
+
+    The CI linted in bash mode, so a bashism passed every push and only
+    broke on a dash runner (Linux, WSL, Alpine). The skill's own
+    compatibility line promises POSIX sh + awk.
+
+    Only the SC3xxx family counts: those are the POSIX-compatibility
+    findings. The rest of the warning level is not about POSIX (the
+    `CDPATH= cd` idiom trips SC1007 in every shell, and it is correct).
+    """
+    import shutil
+    import subprocess
+    sc = shutil.which("shellcheck")
+    if not sc:
+        return SKIP
+    hits = []
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        p = root / "SKILL" / rel
+        r = subprocess.run([sc, "--shell=sh", "--severity=warning", str(p)],
+                           capture_output=True, text=True)
+        for ln in r.stdout.splitlines():
+            m = re.search(r"\b(SC3\d{3})\b", ln)
+            if m:
+                hits.append((f"SKILL/{rel}", ln.strip()[:70]))
+    return hits
+
+
+def rule_r14(root, shipped, repo_files):
+    """the JSON extraction formula outside the shared library.
+
+    The formula lived in four files and the copies had already drifted.
+    The two shapes that give it away are awk's `match(<var>, *"<key>"*)`
+    and `substr(<var>, RSTART+..., RLENGTH-...)`; the title pattern in
+    worker_list uses neither (its match carries a regex literal, not a
+    quoted key), and python's `re.match` is not awk's `match`.
+    """
+    hits = []
+    for rel in shipped:
+        if not rel.endswith((".sh", ".awk")) or rel == "scripts/_json.awk":
+            continue
+        key = f"SKILL/{rel}"
+        for n, ln in code_lines(repo_files.get(key) or ""):
+            quoted_key = False
+            for m in re.finditer(r"(?<![.\w])match\(([^,]+),\s*([^)]*)\)", ln):
+                if '"' in m.group(2):
+                    quoted_key = True
+            rstart = re.search(r"substr\(\s*(?:RSTART|[^,]+,\s*RSTART)", ln)
+            if quoted_key or rstart:
+                hits.append((f"{key}:{n}", ln[:70]))
+    return hits
+
+
+def rule_r15(root, shipped, repo_files):
+    """a JSON parse that refuses control characters inside strings.
+
+    The serve sporadically emits a literal newline inside a JSON string
+    (a title with an embedded line break): without strict=False the parse
+    failed and the caller read an empty result.
+    """
+    hits = []
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        key = f"SKILL/{rel}"
+        lines = (repo_files.get(key) or "").splitlines()
+        for i, ln in enumerate(lines):
+            for m in re.finditer(r"json\.loads?\(", ln):
+                window = " ".join(lines[i:i + 2])
+                if "strict" not in window:
+                    hits.append((f"{key}:{i + 1}", ln.strip()[:70]))
+    return hits
+
+
+def rule_r16(root, shipped, repo_files):
+    """the CI (or the package) using a file that is not published.
+
+    A fixture under runs/ is gitignored: the checkout the CI sees never had
+    it, and the step failed on every runner.
+    """
+    import subprocess
+    ci = root / ".github/workflows/ci.yml"
+    if not ci.exists():
+        return SKIP
+    text = _read(ci)
+    # comments are not uses: a note about a gitignored directory is fine
+    code = "\n".join(re.sub(r"(?<=\s)#.*$", "", ln) if not ln.strip().startswith("#") else ""
+                     for ln in text.splitlines())
+    ignored = ("runs/", ".agents/", "SKILL/scripts/evals/", "RSI_LOG", "reports/")
+    hits = []
+    for n, ln in enumerate(code.splitlines(), 1):
+        for pref in ignored:
+            if pref in ln:
+                hits.append((f"ci.yml:{n}", ln.strip()[:70]))
+                break
+    # a repo-relative path the CI uses must be tracked
+    try:
+        tracked = set(subprocess.run(["git", "ls-files"], cwd=root,
+                                      capture_output=True, text=True).stdout.split())
+    except OSError:
+        return SKIP
+    for m in re.finditer(r"(?:SKILL|tools|\.github)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+", code):
+        rel = m.group(0)
+        if rel not in tracked:
+            hits.append((f"ci.yml", f"{rel} is not tracked by git"))
+    return hits
+
+
+def rule_r17(root, shipped, repo_files):
+    """the same function body in two shipped files (DRY).
+
+    The per-OS adapters are excluded on purpose: each one repeats the
+    same one-line delegator to the shared skeleton BY DESIGN.
+    """
+    import hashlib
+    groups = {}
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        key = f"SKILL/{rel}"
+        text = repo_files.get(key) or ""
+        name, cur = None, None
+        for n, ln in enumerate(text.splitlines(), 1):
+            m = re.match(r"^([a-z_][a-z0-9_]*)\(\)\s*\{", ln)
+            if m:
+                name = m.group(1)
+                if ln.rstrip().endswith("}"):
+                    # a one-line function body
+                    h = hashlib.sha1(ln.encode()).hexdigest()
+                    groups.setdefault((name, h), []).append(f"{key}:{n}")
+                    cur = None
+                else:
+                    cur = [ln]
+                continue
+            if cur is not None:
+                cur.append(ln)
+                if ln.strip() == "}":
+                    h = hashlib.sha1("\n".join(cur).encode()).hexdigest()
+                    groups.setdefault((name, h), []).append(f"{key}:{n}")
+                    cur = None
+    hits = []
+    for (name, _h), places in sorted(groups.items()):
+        files = sorted({p.split(":")[0] for p in places})
+        if len(files) > 1 and not all(f.startswith("SKILL/scripts/os/") for f in files):
+            hits.append((", ".join(files), f"identical body of {name}()"))
+    return hits
+
+
+def rule_r18(root, shipped, repo_files):
+    """a random directory as a fallback for a path two processes must share.
+
+    The cache location is derived from the project hash so that preflight
+    and orchestrate.sh agree on it; a random fallback splits the cache in
+    two and the run goes unauthenticated with no error anywhere.
+    """
+    hits = []
+    shared = re.compile(r"(CACHE|STATE|ROOT|SHARED)")
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        key = f"SKILL/{rel}"
+        for n, ln in code_lines(repo_files.get(key) or ""):
+            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=["\']?\$\(mktemp\s+-d', ln)
+            if m and shared.search(m.group(1)):
+                hits.append((f"{key}:{n}", ln[:70]))
+    return hits
+
+
+def rule_r19(root, shipped, repo_files):
+    """a query parameter that can be empty.
+
+    An empty parameter is a DIFFERENT query, not the same one: the server
+    was asked for the whole catalog of the instance instead of the
+    project's, and the client-side filter had to sift it.
+    """
+    hits = []
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        key = f"SKILL/{rel}"
+        text = repo_files.get(key) or ""
+        lines = text.splitlines()
+        for i, ln in enumerate(lines):
+            m = re.search(r"\?[A-Za-z_]+=\$([A-Za-z_][A-Za-z0-9_]*)", ln)
+            if not m:
+                continue
+            var = m.group(1)
+            if not _var_guarded_non_empty(lines, i, var):
+                hits.append((f"{key}:{i + 1}", ln.strip()[:70]))
+    return hits
+
+
+def _var_guarded_non_empty(lines, upto, var):
+    """Is $var rejected when empty, before line `upto`?"""
+    i = 0
+    while i < upto:
+        ln = lines[i]
+        if re.search(r'\[ -n "\$' + re.escape(var) + r'" \]', ln):
+            return True
+        m = re.match(r'\s*case\s+"\$' + re.escape(var) + r'"\s+in\b', ln)
+        if m:
+            j = i + 1
+            while j < len(lines) and not re.match(r"\s*esac\b", lines[j]):
+                pat = lines[j].strip().split(")")[0].strip()
+                # a pattern that does NOT match the empty string rejects it
+                if pat and pat not in ("*", '""') and not pat.startswith("*|"):
+                    return True
+                j += 1
+            i = j
+        i += 1
+    return False
+
+
+def rule_r20(root, shipped, repo_files):
+    """docs invoking bash over a script whose shebang is #!/bin/sh."""
+    hits = []
+    for name, text in repo_files.items():
+        if not (name.startswith("README") or name.startswith("SKILL/references/")
+                or name == "CHANGELOG.md"):
+            continue
+        for n, ln in enumerate(text.splitlines(), 1):
+            for m in re.finditer(r"\bbash\s+(\S+\.sh)\b", ln):
+                target = m.group(1)
+                for cand in (root / target, root / "SKILL/scripts" / Path(target).name,
+                             root / "SKILL" / target):
+                    if cand.exists():
+                        first = _read(cand).splitlines()
+                        if first and first[0].startswith("#!/bin/sh"):
+                            hits.append((f"{name}:{n}", f"{target} is #!/bin/sh"))
+                        break
+    return hits
+
+
 DETECTORS = [
     ("R01", rule_r01), ("R02", rule_r02), ("R03", rule_r03), ("R04", rule_r04),
     ("R05", rule_r05), ("R06", rule_r06), ("R07", rule_r07), ("R08", rule_r08),
     ("R09", rule_r09), ("R10", rule_r10), ("R11", rule_r11), ("R12", rule_r12),
+    ("R13", rule_r13), ("R14", rule_r14), ("R15", rule_r15), ("R16", rule_r16),
+    ("R17", rule_r17), ("R18", rule_r18), ("R19", rule_r19), ("R20", rule_r20),
 ]
 
 
@@ -407,6 +666,10 @@ def main(argv):
     total = 0
     for rid, fn in DETECTORS:
         hits = fn(root, shipped, repo_files)
+        if hits is SKIP:
+            # A rule that could not run is NOT a rule that found nothing.
+            print(f"[SKIP] {rid}: the tool it needs is not available here")
+            continue
         if hits:
             total += len(hits)
             print(f"[OPEN] {rid}: {len(hits)} hit(s)")
@@ -481,6 +744,25 @@ MUTATIONS = {
                              '\ncurl -s "$AUTH" http://example.invalid\n'),
     "R12": lambda c: _append(c / "SKILL/scripts/os/_common.sh",
                              "\n_x=$(python3 -c 'print(1)')\n"),
+    "R13": lambda c: _append(c / "SKILL/scripts/os/_common.sh",
+                             '\nif [[ -n "$_JSON_LIB" ]]; then :; fi\n'),
+    "R14": lambda c: _append(c / "SKILL/scripts/os/_common.sh",
+                             "\n_v=$(printf '%s' \"$x\" | awk '{ if (match($0, *\"key\"*)) { print substr($0, RSTART+1, RLENGTH-1) } }')\n"),
+    "R15": lambda c: _append(c / "SKILL/scripts/os/_common.sh",
+                             "\n_x=$(python3 -c 'import json,sys; json.loads(sys.stdin.read())')\n"),
+    "R16": lambda c: _append(c / ".github/workflows/ci.yml",
+                             "\n      - name: uses an unpublished file\n"
+                             "        run: sh runs/20261001-replica/ledger.yaml\n"),
+    "R17": lambda c: (_append(c / "SKILL/scripts/os/_common.sh",
+                              "\nzz_same_body() { :; }\n"),
+                      _append(c / "SKILL/scripts/preflight.sh",
+                              "\nzz_same_body() { :; }\n")),
+    "R18": lambda c: _append(c / "SKILL/scripts/os/_common.sh",
+                             '\nCACHE_DIR="$(mktemp -d)"\n'),
+    "R19": lambda c: _sub(c / "SKILL/scripts/os/_common.sh",
+                          '[ -n "$_dir_enc" ] || return 3\n', ""),
+    "R20": lambda c: _append(c / "README.md",
+                             "\nsh SKILL/scripts/validate_dag.sh  # or: bash SKILL/scripts/validate_dag.sh\n"),
 }
 
 
@@ -509,10 +791,17 @@ def _load(root):
 def selftest(root):
     import tempfile
     failures = []
+    unproven = []
     for rid, fn in DETECTORS:
         # 1. the clean tree must NOT fire
         shipped, repo_files = _load(root)
         clean_hits = fn(root, shipped, repo_files)
+        if clean_hits is SKIP:
+            # A rule that could not run was not proved: it is neither a
+            # success nor a failure, and it must not be counted as one.
+            unproven.append(rid)
+            print(f"[SKIP] {rid}: no tool available, the rule could not be proved")
+            continue
         if clean_hits:
             failures.append(f"{rid}: fires on the CLEAN tree: {clean_hits[:2]}")
             continue
@@ -523,6 +812,10 @@ def selftest(root):
             MUTATIONS[rid](copy)
             s2, r2 = _load(copy)
             dirty_hits = fn(copy, s2, r2)
+            if dirty_hits is SKIP:
+                unproven.append(rid)
+                print(f"[SKIP] {rid}: no tool available on the copy, not proved")
+                continue
             if not dirty_hits:
                 failures.append(f"{rid}: did NOT fire with its defect introduced")
             else:
@@ -533,6 +826,11 @@ def selftest(root):
         for f in failures:
             print(f"[FAIL]   {f}")
         print(f"selftest: {len(failures)} rule(s) are not trustworthy")
+        return 1
+    if unproven:
+        print()
+        print(f"selftest: {len(failures) + len(unproven)} rule(s) could NOT be proved "
+              f"(tool missing): {', '.join(unproven)}")
         return 1
     print("selftest: every rule is trustworthy (proved with its own defect)")
     return 0

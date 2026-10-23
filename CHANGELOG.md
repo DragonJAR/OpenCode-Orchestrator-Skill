@@ -6,6 +6,56 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-10-23
+
+Second pass over the history. Every defect class in the project's log was
+mined again — this time from the whole commit history, not only from the
+cycles already recorded — and the classes the guard of 1.5.2 did not cover
+became rules. **No new live defect was found**: all eight are closed, and
+each one now has a rule that can actually fail.
+
+### Added
+- **Eight more rules** in the class guard (`tools/sweep-classes.sh`), each one
+  proved by introducing its own defect:
+  a bash-only construct in a script that declares POSIX sh (the CI only
+  linted in bash mode, so a bashism reached a dash runner and broke there
+  only); the JSON extraction formula outside the shared library; a JSON parse
+  that refuses control characters inside strings (the serve emits a literal
+  newline inside a JSON string); the CI using a file that is not published (a
+  fixture under `runs/` is gitignored, so the checkout the CI sees never had
+  it); the same function body in two shipped files; a random directory as a
+  fallback for a path two processes must share (the cache split in two); a
+  query parameter that can be empty (an empty parameter is a different query:
+  the whole catalog instead of the project's); and the docs invoking `bash`
+  over a `#!/bin/sh` script.
+- **A test for the two implementations of the `[NN] Name` pattern.**
+  `title_normalize` and `worker_list` know the same pattern in two separate
+  ways. The project accepts that (consolidating them would add a shared
+  library to the package for one regex, and the copies have not drifted), but
+  a silent divergence was unguarded: the symptom would be a double ordinal
+  ("[01] [01] Vermithrax"), the C-COS defect of round 6. The test now asserts
+  that both read the same ordinal out of the same title, that an old ordinal
+  is replaced and not doubled, and that the slug still ignores it.
+
+### Fixed
+- **The POSIX rule was never checked.** The skill promises "POSIX sh + awk" and
+  the CI linted with shellcheck's default shell (bash), so a bashism would
+  pass every push and only break on Linux, WSL or Alpine. The guard now
+  lints in `sh` mode and only counts the POSIX-compatibility findings (the
+  SC3xxx family): the rest of the warning level is not about POSIX — the
+  `CDPATH= cd` idiom trips SC1007 in every shell, and it is correct.
+
+### Verification
+- The new POSIX rule was written first with `--severity=error`, and the
+  selftest caught it: in `sh` mode the POSIX findings are *warnings*, so the
+  rule could never have failed. It is now precise, and it is proved.
+- Regression suite **33/33** (one new assertion, `r8-title-pattern-coherence`),
+  and the new assertion was run against a deliberately diverged
+  `title_normalize`: it fails there (with the double ordinal in the message)
+  and passes here.
+- The class sweep: 0 hits on the tree, and all **20** rules proved with their
+  own defect.
+
 ## [1.5.2] - 2026-10-23
 
 Class sweep over the whole history: every defect class in the project's log was
@@ -525,7 +575,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...v1.5.0
