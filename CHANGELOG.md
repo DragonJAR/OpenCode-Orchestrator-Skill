@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-22
+
+Audit and hardening release. A line-by-line read of every script and every
+reference document of the package, plus a sweep that looked for each defect
+class in every other place it could occur. Every entry below names the
+observable symptom the defect produced, not the mechanism that fixed it.
+
 ### Fixed
 A full line-by-line audit of the package (every script, every reference
 document) and a sweep that looked for each defect class in every other place
@@ -150,6 +157,46 @@ router, the rule it comes from (R13e) and the README now say the same thing:
 two moves — monitor continuously, route each new task to the best-suited
 session — and nothing else.
 
+**The cache could be split in two by a permission error.**
+The cache directory is derived from the project hash, and `preflight.sh` and
+`orchestrate.sh` are separate processes that have to agree on it. When the
+directory could not be created, the code fell back to a random `mktemp -d`
+directory: each process then got a *different* one, `preflight` wrote the
+password into one and the run read from the other, and the run went
+unauthenticated with no error anywhere. The fallback also gave up the property
+it was meant to provide — a per-process random directory is not a place two
+processes can agree on. The location is now used as derived, and a cache that
+cannot be created is reported instead of silently replaced by a different one.
+The cache directory itself is also refused when it is a symlink: `mkdir -p` on
+a symlink-to-directory succeeds, so the per-key guards could not catch it.
+
+**A failed URL encoding turned into an unfiltered query.**
+The project directory is sent to the API percent-encoded. The encoding ran
+through python and discarded its exit code, so a python failure produced an
+EMPTY directory parameter — a different query, not the same one: the server
+was asked for the whole catalog of the instance (thousands of sessions, 50
+per page, straight into the pagination cap) and the client-side filter had to
+sift it. The encoding now fails closed, and the caller refuses to issue the
+unfiltered query.
+
+**The pagination cap returned a truncated catalog as if it were complete.**
+The page loop stops after 30 iterations as a safety valve, but the cap was
+reached silently: the accumulated pages were returned with a success code and
+the caller read them as the WHOLE list. That is the same class as the
+truncated-list defect above (the pool then reads "max ordinal 0" and the
+next worker reuses `[01]`). Reaching the cap with a page still pending is
+now fatal, exactly like a malformed page.
+
+**The same JSON extraction was written four times, and the copies differed.**
+The offset formula existed in `os/_common.sh`, `orchestrate.sh`,
+`preflight.sh` and `watch_run.sh`, and they had already drifted: two of them
+stripped a number to its digits (so `1.5` came out as `15` and `-5` as `5`),
+one could not read a number at all (it returned the empty string), and only
+one returned the value verbatim. A copy that answers a different question is
+a copy that will answer it wrong somewhere. The formula now lives once, in
+`scripts/_json.awk` (the same shared-library pattern `_validators.awk` uses
+for the two validators), and all four consumers call it.
+
 **Other corrections:** the router install no longer hides a failure; the
 unguarded API calls report a transport error instead of misdiagnosing it as a
 missing model or a wrong id; the temporary file used by `clean` no longer falls
@@ -162,9 +209,11 @@ and the `--force-tabs` flag were missing from the help text.
 - The `tabs.json` merge, the state-root resolution and the pool ordinal are now
   single-sourced instead of being re-implemented per script or per operating
   system.
-- Every JSON field extraction goes through the shared getter, or through a
-  derived-offset scan where a whole-document read does not apply. No hand-written
-  offset remains in the package.
+- Every JSON field extraction goes through ONE implementation, the shared
+  getter in `scripts/_json.awk`. The whole-document getter and the per-record
+  scans are two ways of CALLING it, not two copies of the formula: no
+  hand-written offset remains in the package, and no copy of the formula
+  remains either.
 - The documentation now matches the code: the default root name, the sub-agent
   title form, the pool-derived ordinal, the tab-gate field names, the version
   gate, the subcommand count and the endpoint placeholders
@@ -183,6 +232,10 @@ and the `--force-tabs` flag were missing from the help text.
 - CI now runs on **Linux, macOS and Windows** (Git Bash): syntax, shellcheck
   and the package build on every push, so the three platforms are verified
   instead of inspected.
+- The release was verified against a **live OpenCode instance** on macOS and
+  Linux (the full create/inspect/send/collect/delete cycle of a real run), and
+  the regression suite was run on both, plus a Windows line-ending proxy, so
+  the Windows fixes were exercised rather than reasoned about.
 
 ## [1.0.2] - 2026-10-14
 
@@ -378,7 +431,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...v1.5.0
 [1.0.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/releases/tag/v1.0.0
