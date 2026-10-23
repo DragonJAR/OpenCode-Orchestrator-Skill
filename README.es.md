@@ -175,7 +175,9 @@ sh SKILL/scripts/orchestrate.sh self-check
 
 CI ejecuta las mismas comprobaciones en **Linux, macOS y Windows** (Git
 Bash), así que los adaptadores por OS se verifican en cada push en vez de
-inspeccionarse a mano.
+inspeccionarse a mano. Además, todo valor que los scripts leen de python
+llega terminado en LF: en Windows un `print()` en modo texto acaba la línea
+con CRLF y la shell leería el CR como parte del valor.
 
 La suite de regresión de comportamiento se mantiene en privado: maneja una
 instancia viva de OpenCode (crea y borra sesiones reales), así que ni se

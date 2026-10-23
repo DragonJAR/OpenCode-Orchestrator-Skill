@@ -129,6 +129,17 @@ existing root is now reused (never replaced) and the router instruction is
 only installed on a freshly created one -- sending it again would post a
 message into the operator's live session.
 
+**On Windows, every value read from python carried a stray CR.**
+Python's text-mode stdout ends the line with CRLF on Windows, so every value
+the shell read back from it (a session id, a cursor, a count, a whole JSON
+document) ended with a `\r`. The values that were compared or used in a URL
+were corrupted: the session lookup lost its candidates, a cursor carried a
+control character into the query string, and the packaged inventory check
+reported a mismatch between two byte-identical lists. All the python calls
+now go through one helper that keeps the exit code and prints LF only, and the
+package inventory is compared with the shell instead of `cmp(1)` (which Git for
+Windows does not ship either).
+
 **Other corrections:** the router install no longer hides a failure; the
 unguarded API calls report a transport error instead of misdiagnosing it as a
 missing model or a wrong id; the temporary file used by `clean` no longer falls

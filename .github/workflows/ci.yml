@@ -55,6 +55,29 @@ jobs:
           sh SKILL/scripts/package.sh
           test -f dist/opencode-orchestrator-skill.zip
           echo "package build PASS"
+      - name: Windows proxy (no CR in the values the shell reads)
+        run: |
+          set -e
+          # On Windows a text-mode print() ends the line with CRLF, and the
+          # shell then reads the CR as part of the value (a session id, a
+          # cursor, a count). This forces that behaviour on EVERY runner, so
+          # the regression is caught everywhere and not only on Windows.
+          command -v python3 >/dev/null 2>&1 || { echo "python3 not available: skipping the CRLF proxy"; exit 0; }
+          SIM="$(mktemp -d)"
+          SITE="$SIM/site"; BIN="$SIM/bin"
+          mkdir -p "$SITE" "$BIN"
+          REAL_PY="$(command -v python3)"
+          printf '%s\n' 'import sys' 'try:' '    sys.stdout.reconfigure(newline="\r\n")' 'except Exception:' '    pass' > "$SITE/sitecustomize.py"
+          printf '%s\n' '#!/bin/sh' "export PYTHONPATH=\"$SITE:\${PYTHONPATH:+:\$PYTHONPATH}\"" "exec \"$REAL_PY\" \"\$@\"" > "$BIN/python3"
+          chmod +x "$BIN/python3"
+          PATH="$BIN:$PATH"; export PATH
+          . SKILL/scripts/os/_paths.sh
+          . SKILL/scripts/os/_common.sh
+          v=$(printf '{"id":"ses_x","n":7}' | json_get_field id)
+          [ "$v" = "ses_x" ] || { echo "CR contamination in the extracted value: [$v]"; exit 1; }
+          n=$(printf '{"id":"ses_x","n":7}' | json_get_field n)
+          [ "$n" = "7" ] || { echo "CR contamination in the extracted number: [$n]"; exit 1; }
+          echo "CRLF proxy PASS"
       # Note: validate_dag.sh and validate_ledger_closed.sh require a
       # ledger fixture under runs/, which is gitignored (the directory
       # contains prior run evidence; AGENTS.md treats runs/ as

@@ -148,8 +148,12 @@ ACTUAL_SORTED="$PACKAGE_WORK/actual-sorted.txt"
 python3 - "$PACKAGE_ZIP" > "$ACTUAL_ENTRIES" <<'PYLIST' || exit 1
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
-    for n in z.namelist():
-        print(n)
+    names = z.namelist()
+# BINARY write: on Windows a text-mode print() ends the line with CRLF, and
+# the comparison against the LF-only expected list then reports a mismatch
+# that does not exist (and the runner log hides the CR, so both lists look
+# identical).
+sys.stdout.buffer.write(("\n".join(names) + "\n").encode("utf-8"))
 PYLIST
 LC_ALL=C sort "$EXPECTED_ENTRIES" > "$EXPECTED_SORTED"
 LC_ALL=C sort "$ACTUAL_ENTRIES" > "$ACTUAL_SORTED"

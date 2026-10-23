@@ -656,7 +656,7 @@ sub_verify_daughters() {
   # "verified_ok=N failures=0" over an INCOMPLETE list.
   RESP=$(api_get_all_pages "/api/session?parentID=$WORKER_ID") \
     || die "GET /api/session?parentID=$WORKER_ID failed"
-  printf '%s\n' "$RESP" | EXPECTED_PARENT="$EXPECTED_PARENT" PROJ_DIR="$PROJ_DIR" python3 -c '
+  printf '%s\n' "$RESP" | EXPECTED_PARENT="$EXPECTED_PARENT" PROJ_DIR="$PROJ_DIR" py -c '
 import json, sys, os
 d = json.load(sys.stdin, strict=False).get("data", [])
 wp = os.environ["EXPECTED_PARENT"]; locx = os.environ["PROJ_DIR"]
@@ -700,7 +700,7 @@ sub_delete_session() {
   # to the operator would be wrong).
   _CHILD_JSON=$(api_get_all_pages "/api/session?parentID=$SID") \
     || die "GET /api/session?parentID=$SID failed; the R7 gate needs the real child count"
-  CHILDREN=$(printf '%s' "$_CHILD_JSON" | python3 -c 'import json,sys
+  CHILDREN=$(printf '%s' "$_CHILD_JSON" | py -c 'import json,sys
 try:
     print(len(json.load(sys.stdin, strict=False).get("data",[])))
 except Exception:
@@ -770,7 +770,7 @@ tabs_prune_ids() {
   DELETED_IDS="$*"
   export DELETED_IDS
   lock_exec "$_tj" "${ORCHESTRATE_TABS_LOCK_TIMEOUT:-5}" \
-    python3 -c '
+    py -c '
 import json, os, sys
 deleted = set(os.environ.get("DELETED_IDS","").split())
 if not deleted or "" in deleted: print(0); raise SystemExit
@@ -811,7 +811,7 @@ sub_clean() {
     # unchecked fetch reported a transport failure as the same message.
     _orch_all=$(project_sessions_json) \
       || die "GET /api/session failed; cannot find the [00] orchestrator"
-    ORCH_SID=$(printf '%s' "$_orch_all" | python3 -c '
+    ORCH_SID=$(printf '%s' "$_orch_all" | py -c '
 import json, sys, re
 proj = "'"$PROJ_DIR"'"
 ss = json.load(sys.stdin, strict=False).get("data", [])
@@ -839,7 +839,7 @@ if cands: print(cands[0]["id"])
   # No predictable /tmp fallback: a planted symlink at a known name would
   # redirect the python's stderr into the attacker's file. Fail closed.
   _clean_err=$(mktemp 2>/dev/null) || die "clean: cannot create a temporary file for the enumeration errors"
-  TO_DELETE=$(PROJ_DIR="$PROJ_DIR" ORCH_SID="$ORCH_SID" python3 -c '
+  TO_DELETE=$(PROJ_DIR="$PROJ_DIR" ORCH_SID="$ORCH_SID" py -c '
 import json, os, re, subprocess
 orch = os.environ["ORCH_SID"]; proj = os.environ["PROJ_DIR"]
 seen = {orch}; stack = []
@@ -1151,7 +1151,7 @@ sub_session_id() {
   # '... crear worker [01] R5B1' resolved as worker 01. Exact-prefix match now,
   # and >1 match is fail-closed instead of silently taking the first.
   _sid_rc=0
-  RESULT=$(printf '%s' "$RESP" | python3 -c "
+  RESULT=$(printf '%s' "$RESP" | py -c "
 import json, sys, re
 d = sys.argv[1]
 sub = sys.argv[2]

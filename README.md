@@ -171,7 +171,10 @@ sh SKILL/scripts/orchestrate.sh self-check
 ```
 
 CI runs the same checks on **Linux, macOS and Windows** (Git Bash), so the
-per-OS adapters are verified on every push instead of inspected by hand.
+per-OS adapters are verified on every push instead of inspected by hand. The
+scripts also keep every value they read from python LF-terminated: on Windows a
+text-mode `print()` would end the line with CRLF and the shell would read the
+CR as part of the value.
 
 The behavioural regression suite is maintained privately: it drives a live
 OpenCode instance (it creates and deletes real sessions), so it is neither

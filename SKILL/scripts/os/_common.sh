@@ -74,14 +74,14 @@ api_get_all_pages() {
     # corrupt _out via the except's stdin tail or terminate pagination
     # early on an empty cursor from the bad page. Retry the SAME url once
     # before falling through: a 2nd request typically returns clean JSON.
-    if ! printf '%s' "$_resp" | python3 -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null; then
+    if ! printf '%s' "$_resp" | py -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null; then
       _resp=$(opencode api GET "$_url" 2>/dev/null) || return $?
       # The retry is RE-VALIDATED. Before, a second malformed page was accepted
       # and the pagination ended with a truncated catalog and rc 0: the callers
       # (pool_list, sub_sessions, sub_session_id) treat the result as the
       # COMPLETE list, so the pool read as "max ordinal 0" and the next worker
       # reused [01]. A malformed page is now fatal (rc 3), never a short list.
-      printf '%s' "$_resp" | python3 -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null || return 3
+      printf '%s' "$_resp" | py -c 'import json,sys; json.load(sys.stdin, strict=False)' 2>/dev/null || return 3
     fi
     if [ "$_first" = 1 ]; then _out="$_resp"; _first=0
     else
@@ -91,7 +91,7 @@ api_get_all_pages() {
       # failed and the pagination ended with a truncated list (silently, before
       # the fail-closed guard). The raw decoder reads one document at a time
       # and stops at its end, so a newline inside a string is harmless.
-      _merged=$(printf '%s\n%s\n' "$_out" "$_resp" | python3 -c '
+      _merged=$(printf '%s\n%s\n' "$_out" "$_resp" | py -c '
 import json, sys
 raw = sys.stdin.read()
 dec = json.JSONDecoder(strict=False)
@@ -122,7 +122,7 @@ print(json.dumps(a, separators=(",", ":")))
     # `or ""`: a JSON null next-cursor must print empty, not the literal
     # string "None" (querying ?cursor=None returns InvalidCursorError and the
     # loop would discard every page already accumulated).
-    _cursor=$(printf '%s' "$_resp" | python3 -c 'import json,sys
+    _cursor=$(printf '%s' "$_resp" | py -c 'import json,sys
 d=json.load(sys.stdin, strict=False)
 print(d.get("cursor",{}).get("next") or "")' 2>/dev/null) || return 3
     # A FAILED cursor extraction is not "no more pages": before, the empty
@@ -135,6 +135,22 @@ print(d.get("cursor",{}).get("next") or "")' 2>/dev/null) || return 3
 }
 
 # --- json (jq-less; awk) --------------------------------------------------------
+# py ARGS... -> runs python3 and prints its output with LF only.
+#
+# WHY: on Windows a text-mode print() ends the line with CRLF, and the shell
+# then reads the CR as part of the VALUE (a session id, a cursor, a count, a
+# whole JSON document). Every python invocation of the skill goes through this
+# helper, so the shell always receives LF-terminated output. The exit code of
+# python is preserved (the callers branch on it).
+py() {
+  # The output is captured AND the exit code kept: a python that prints a
+  # result and exits non-zero (the "ambiguous" case of session-id) must still
+  # deliver its output to the caller.
+  _py_out=$(python3 "$@"); _py_rc=$?
+  [ -n "$_py_out" ] && printf '%s\n' "$_py_out" | tr -d '\r'
+  return $_py_rc
+}
+
 json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
   awk 'BEGIN{ORS=""}{gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");gsub(/\r/,"\\r");if(NR>1)printf "\\n";printf "%s",$0}'
 }
@@ -151,7 +167,7 @@ project_sessions_json() {
 # directory can hold spaces, '+', '&' and non-ASCII, and an unencoded value
 # would change the query the server sees (or break the URL).
 url_encode() {
-  python3 -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$1" 2>/dev/null
+  py -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$1" 2>/dev/null
 }
 # json_get_field KEY [VALUE_PREFIX] : stdin=JSON -> the value of the "KEY" field.
 #
@@ -244,7 +260,7 @@ cache_write() {  # KEY VALUE [MODE] -> persists VALUE to CACHE_DIR/KEY. ONE writ
   if [ "${3:-redact}" = "raw" ] || ! command -v python3 >/dev/null 2>&1; then
     printf '%s\n' "$2" > "$_ct" || { rm -f "$_ct"; return 1; }
   else
-    printf '%s\n' "$2" | python3 -c '
+    printf '%s\n' "$2" | py -c '
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -662,7 +678,7 @@ os_tabs_merge_shared() {  # SID TITLE TUI_CWD BACKUP_DIR
   # guidance line there and with rc 70 + a raw lock error everywhere else.
   # Now the probe is in the shared skeleton: the same rc and message on every
   # OS. (On darwin/linux/wsl the probe always passes.)
-  python3 -c 'import fcntl' >/dev/null 2>&1 || {
+  py -c 'import fcntl' >/dev/null 2>&1 || {
     printf 'tabs_status=fail-closed (this python3 has no fcntl; e.g. native Windows python on PATH; nothing was written)\n' >&2
     printf 'Next: put an MSYS2 python3 on PATH, or open the session in the TUI (/sessions or Ctrl+X L) and mark the tab as not verified.\n' >&2
     return 2
@@ -820,7 +836,7 @@ pool_list() {
   # tokens.output), so `s.get('output', 0)` was always 0 and the dedup
   # collision guard could never see prior work; the fallback restores the
   # fail-closed round-5 semantics (out > 0 and no time.idle => running).
-  printf '%s' "$RESP" | python3 -c "
+  printf '%s' "$RESP" | py -c "
 import json, sys, re
 d = sys.argv[1]
 data = json.loads(sys.stdin.read(), strict=False).get('data', [])
