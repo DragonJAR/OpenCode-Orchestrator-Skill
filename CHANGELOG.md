@@ -140,6 +140,16 @@ now go through one helper that keeps the exit code and prints LF only, and the
 package inventory is compared with the shell instead of `cmp(1)` (which Git for
 Windows does not ship either).
 
+**The orchestrator's role is now explicit: it monitors and it routes.**
+The router instruction installed on `[00] Orchestrator` stated that it never
+implements the task, but not what it *does*: it never said that its standing
+duty is to watch the other sessions continuously, nor that every **new** task
+goes to the session the orchestrator judges the most convenient for it (the
+old text said "pick any idle worker", which is not the same thing). The
+router, the rule it comes from (R13e) and the README now say the same thing:
+two moves — monitor continuously, route each new task to the best-suited
+session — and nothing else.
+
 **Other corrections:** the router install no longer hides a failure; the
 unguarded API calls report a transport error instead of misdiagnosing it as a
 missing model or a wrong id; the temporary file used by `clean` no longer falls
@@ -163,6 +173,13 @@ and the `--force-tabs` flag were missing from the help text.
 ### Added
 - A root `LICENSE`: GitHub could not detect the license, which lived only
   inside the package.
+- The README (English and Spanish) was rewritten around what the skill
+  actually does: the orchestrator's two moves, the command layer, the contract
+  layer, a runnable quick start, and the refusals. Every claim in it is now
+  checked against the code, and the two false ones are gone: the number of
+  hard rules (it listed 15; there are more, so the number was dropped rather
+  than restated) and the list of commands that change something (it named
+  four; six do).
 - CI now runs on **Linux, macOS and Windows** (Git Bash): syntax, shellcheck
   and the package build on every push, so the three platforms are verified
   instead of inspected.

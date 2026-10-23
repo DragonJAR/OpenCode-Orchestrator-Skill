@@ -23,7 +23,13 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=$(mktemp -d 2>/dev/null) || CACHE
 case "$CACHE_DIR" in
  ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;;
 esac
-mkdir -p "$CACHE_DIR" 2>/dev/null && chmod 700 "$CACHE_DIR" 2>/dev/null || true
+mkdir -p "$CACHE_DIR" 2>/dev/null
+# 700 keeps other users out of the cache (it holds the endpoint, the project id
+# and the password file). The chmod is best effort: the location MUST stay
+# derived from the project hash, because preflight and orchestrate.sh have to
+# agree on it -- a failure is reported rather than silently falling back to a
+# random directory, which would split the cache in two.
+chmod 700 "$CACHE_DIR" 2>/dev/null || printf 'warning: could not restrict the cache dir %s to 700\n' "$CACHE_DIR" >&2
 
 # --- http ---------------------------------------------------------------------
 # AUTH is intentionally unquoted. The basic-auth password used by
@@ -755,6 +761,19 @@ tabs_target_path() {
 # tab into a channel the TUI never reads. The adapters only decide the lock
 # mechanism.
 # Exit 4 = no TUI with storage (the caller reports no-tui).
+# tui_pin -> prints the validated TUI branch pin.
+# ONE definition of the default and of the "major branch only" rule: the pin
+# was re-declared in four places and the rule in three, so the copies could
+# drift (and did: one of them accepted a pin with a minor version).
+# The detector (os/tui-detect.sh) is standalone and keeps its own copy of the
+# rule on purpose; it is the only second copy.
+tui_pin() {
+  _tp=${OPENCODE_TUI_PINNED_VERSION:-2}
+  case "$_tp" in
+    *.*) die "OPENCODE_TUI_PINNED_VERSION must be the major branch (e.g. 2), not $_tp" ;;
+  esac
+  printf '%s' "$_tp"
+}
 tabs_json_path() {
   # The state root comes from the ONE resolver (state_root in os/_paths.sh):
   # OPENCODE_STATE_ROOT > ORCHESTRATE_STATE_ROOT > the CLI registry > XDG.
