@@ -148,35 +148,23 @@ sub_sessions() {
   [ -n "$RESP" ] || die "GET /api/session returned an empty response"
   # ONE awk pass (a per-record scan; a subshell per field per record cost ~35ms
   # per session, which is a real regression on an inventory view).
-  # The offset formula is the ONE of json_get_field (os/_common.sh): the value
-  # starts at the key prefix and is read to its natural end. The offsets are
-  # DERIVED from the key, never hardcoded -- a typo can no longer shift a
-  # field by one character or one digit, which is exactly how the msgID and
-  # the millisecond timestamps got truncated in wait-idle.
+  # The offset formula is the SHARED one (scripts/_json.awk, the same library
+  # json_get_field uses): the value starts at the key prefix and is read to its
+  # natural end. The offsets are DERIVED from the key, never hardcoded -- a
+  # typo can no longer shift a field by one character or one digit, which is
+  # exactly how the msgID and the millisecond timestamps got truncated in
+  # wait-idle. This copy used to strip a number to its digits (so "1.5" came
+  # out as "15"); the shared one returns the value verbatim.
+  # The shared library is REQUIRED here: a missing library is a broken
+  # install, and a private copy of the formula is the drift this removes.
+  [ -n "$_JSON_LIB" ] || die 'shared awk library missing: scripts/_json.awk (the JSON extraction cannot run)'
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v d="$(printf '%s' "$PROJ_DIR" | sed 's/\\/\\\\/g')" '
-    function field(s, key,   k, p, v, q, j, e, n) {
-      k = "\"" key "\""
-      p = index(s, k)
-      if (!p) return ""
-      p += length(k)
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      if (substr(s, p, 1) != ":") return ""
-      p++
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      v = substr(s, p)
-      if (substr(v, 1, 1) == "\"") {
-        q = substr(v, 2); j = index(q, "\"")
-        return (j > 0 ? substr(q, 1, j - 1) : q)
-      }
-      e = 1
-      while (e <= length(v) && substr(v, e, 1) !~ /[,}\]]/) e++
-      n = substr(v, 1, e - 1)
-      gsub(/[^0-9].*$/, "", n)
-      return n
-    }
-    { dd = field($0, "directory"); if (dd != d) next
-      printf "%s out=%-6s %s\n", field($0, "id"), field($0, "output"), field($0, "title") }'
+    awk -v d="$(printf '%s' "$PROJ_DIR" | sed 's/\\/\\\\/g')" "$_JSON_LIB"'
+    { json_field($0, "directory", ""); dd = JSON_VALUE; if (dd != d) next
+      json_field($0, "id", ""); _id = JSON_VALUE
+      json_field($0, "output", ""); _out = JSON_VALUE
+      json_field($0, "title", ""); _ti = JSON_VALUE
+      printf "%s out=%-6s %s\n", _id, _out, _ti }'
 }
 
 sub_attach_tabs() {
@@ -618,7 +606,12 @@ sub_tabs() {
 
 sub_self_check() {
   printf 'os=%s\nproj_dir=%s\ncache_dir=%s\n' "$OS" "$PROJ_DIR" "$CACHE_DIR"
-  for c in awk sed curl tr python3 flock shasum sha256sum cygpath; do
+  # The probe lists the tools the skill ACTUALLY uses. It used to list flock(1),
+  # which the skill deliberately does NOT use (the lock is python fcntl,
+  # because flock(1) does not exist on macOS or Git Bash), and it did not list
+  # mktemp, which the hardened cache writer depends on for its atomic publish.
+  # A dependency report that names the wrong tools is worse than none.
+  for c in awk sed curl tr python3 mktemp shasum sha256sum cygpath; do
     if command -v "$c" >/dev/null 2>&1; then printf 'have: %s -> %s\n' "$c" "$(command -v "$c")"; fi
   done
   command -v opencode >/dev/null 2>&1 && printf 'opencode_cli=%s\n' "$(command -v opencode)"

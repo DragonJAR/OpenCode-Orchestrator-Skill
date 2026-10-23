@@ -152,22 +152,16 @@ AG=$(curl -s -m 10 ${AUTH:-} "$URL/api/agent" | tr -d ' \n')
 # The catalog is a PER-RECORD scan (the array is split first), so the
 # whole-document getter does not apply; the offset is DERIVED from the key
 # instead of hardcoded, so a typo cannot shift an id by one character.
+# The formula itself is the SHARED one (scripts/_json.awk): this copy used
+# to return the EMPTY string for anything that was not a string, so a
+# numeric field would have read as absent.
 _ag_field() {  # MODE -> the comma-separated ids of that mode
+  # The shared library is REQUIRED here: a missing library is a broken
+  # install, and a private copy of the formula is the drift this removes.
+  [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: scripts/_json.awk\n' >&2; exit 2; }
   printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | \
-    awk -v mode="$1" '
-    function field(s, key,   k, p, v, q, j) {
-      k = "\"" key "\""
-      p = index(s, k); if (!p) return ""
-      p += length(k)
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      if (substr(s, p, 1) != ":") return ""
-      p++
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      v = substr(s, p)
-      if (substr(v, 1, 1) == "\"") { q = substr(v, 2); j = index(q, "\""); return (j > 0 ? substr(q, 1, j - 1) : q) }
-      return ""
-    }
-    index($0, "\"mode\":\"" mode "\"") { i = field($0, "id"); if (i != "") print i }' | paste -sd, -
+    awk -v mode="$1" "$_JSON_LIB"'
+    index($0, "\"mode\":\"" mode "\"") { json_field($0, "id", ""); if (JSON_FOUND && JSON_VALUE != "") print JSON_VALUE }' | paste -sd, -
 }
 P=$(_ag_field primary)
 S=$(_ag_field subagent)

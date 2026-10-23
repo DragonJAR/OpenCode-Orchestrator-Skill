@@ -13,17 +13,51 @@ NL='
 # preflight.sh). The require below enforces the contract fail-closed.
 [ "${CACHE_DIR+set}" = set ] || { printf '%s\n' 'ERROR: os/_paths.sh must be sourced before os/_common.sh (sets CACHE_DIR)' >&2; exit 1; }
 #: also refuse empty or "/" (would turn every "$CACHE_DIR/<key>" into "/<key>").
+# This guard comes FIRST: it is the reason a caller sources this file, and it
+# must not be masked by anything this file does on its own account.
 case "$CACHE_DIR" in ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;; esac
+# The shared awk library (scripts/_json.awk) holds the ONE JSON extraction
+# formula. This file is SOURCED, so $0 is the CALLER's path, not this file's:
+# the library is located from what the caller knows -- SELF_DIR (set by
+# orchestrate.sh and preflight.sh) or the caller's own directory (the
+# regression fixtures live in scripts/evals/fixtures/).
+# A missing library is NOT fatal HERE: sourcing this file must not fail for a
+# reason that has nothing to do with the cache. It is fatal where it is
+# actually needed -- at the extraction (see json_get_field), which reports it
+# with the same clear message.
+_JSON_LIB=""
+_JL_SELF="${SELF_DIR:-}"
+_JL_CALLER=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || _JL_CALLER=""
+for _jl in "$_JL_SELF/_json.awk" "$_JL_CALLER/_json.awk" "$_JL_CALLER/../../_json.awk"; do
+  if [ -f "$_jl" ]; then _JSON_LIB=$(cat "$_jl"); break; fi
+done
 # The cache DIR is prepared HERE (the only writer of the cache keys), so that
 # os/_paths.sh stays side-effect free and can be sourced by read-only scripts
-# (the TUI detector). (CWE-377/732): a predictable /tmp fallback let a
-# pre-created dir or symlink poison the endpoint/auth_password/model_default
-# writes; mktemp -d is unpredictable and 700 keeps other users out.
-mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=$(mktemp -d 2>/dev/null) || CACHE_DIR=""
-case "$CACHE_DIR" in
- ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;;
-esac
-mkdir -p "$CACHE_DIR" 2>/dev/null
+# (the TUI detector).
+#
+# The location MUST stay derived from the project hash: preflight.sh and
+# orchestrate.sh are SEPARATE processes that have to agree on it, and the
+# endpoint/auth_password/model_default keys only mean something in the shared
+# directory. A random fallback (mktemp -d) therefore SPLIT the cache in two:
+# preflight wrote the password into one directory and the run read from
+# another, so the run went UNAUTHENTICATED with no error anywhere. The
+# fallback also broke the (CWE-377/732) property it was meant to provide --
+# a per-process random directory is not a place two processes can agree on.
+# The unpredictable path IS the project hash, and it is under the user's own
+# XDG cache, not /tmp, so a planted symlink there is the user's own doing.
+#
+# So: create it, and FAIL CLOSED if it cannot be created. A cache that cannot
+# be written is reported, not silently replaced by a different one.
+mkdir -p "$CACHE_DIR" 2>/dev/null || {
+  printf "ERROR: cannot create the cache dir %s\n" "$CACHE_DIR" >&2
+  printf 'The cache location is derived from the project hash so that preflight and orchestrate.sh share it; it is NOT replaced by a random directory (that would split the cache in two).\n' >&2
+  exit 1
+}
+# The cache DIR itself must not be a symlink (CWE-59): the per-key guards
+# below check the keys, but a symlinked DIRECTORY would redirect every write
+# to the target. mkdir -p on a symlink-to-dir SUCCEEDS, so this has to be
+# checked explicitly.
+[ -L "$CACHE_DIR" ] && { printf 'ERROR: the cache dir %s is a symlink; refusing to write through it (CWE-59)\n' "$CACHE_DIR" >&2; exit 1; }
 # 700 keeps other users out of the cache (it holds the endpoint, the project id
 # and the password file). The chmod is best effort: the location MUST stay
 # derived from the project hash, because preflight and orchestrate.sh have to
@@ -137,6 +171,16 @@ print(d.get("cursor",{}).get("next") or "")' 2>/dev/null) || return 3
     # successful extraction is the real end of the list.
     [ -z "$_cursor" ] && break
   done
+  # The iteration cap is a SAFETY VALVE, not a license to truncate. If the
+  # loop stopped because it ran out of iterations while a next cursor was
+  # still pending, the catalog is INCOMPLETE. Returning it as if it were
+  # the whole list is the "truncated list read as complete" class: the
+  # pool then reads "max ordinal 0" and the next worker reuses [01].
+  # So the cap is FATAL, exactly like a malformed page.
+  if [ "$_iter" -ge 30 ] && [ -n "$_cursor" ]; then
+    printf 'ERROR: the pagination cap (30 pages) was reached with more pages pending; the catalog is INCOMPLETE and is not returned as if it were complete\n' >&2
+    return 3
+  fi
   printf '%s' "$_out"
 }
 
@@ -167,66 +211,55 @@ json_escape() {  # stdin -> JSON string body (no quotes) with \n between lines
 # On a big instance that was slow AND failed intermittently. The client-side
 # filter stays as a safety net: the server filter narrows, it does not trust.
 project_sessions_json() {
-  api_get_all_pages "/api/session?directory=$(url_encode "$PROJ_DIR")" || return 3
+  # The directory filter is only a NARROWING filter: if the encoding fails
+  # and the value goes out empty, the server is asked for the WHOLE catalog
+  # (thousands of sessions, 50 per page -> the pagination cap) and the
+  # client-side filter then has to sift it. So the encoding must FAIL CLOSED:
+  # an empty directory is a different query, not the same one.
+  _dir_enc=$(url_encode "$PROJ_DIR") || return 3
+  [ -n "$_dir_enc" ] || return 3
+  api_get_all_pages "/api/session?directory=$_dir_enc" || return 3
 }
 # url_encode STRING -> percent-encoded for a query parameter. A project
 # directory can hold spaces, '+', '&' and non-ASCII, and an unencoded value
 # would change the query the server sees (or break the URL).
+# A FAILURE is reported (non-zero rc), never turned into an empty value: the
+# caller turns that empty value into an unfiltered query.
 url_encode() {
-  py -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$1" 2>/dev/null
+  _ue=$(py -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$1" 2>/dev/null) || return 1
+  [ -n "$_ue" ] || return 1
+  printf '%s' "$_ue"
 }
 # json_get_field KEY [VALUE_PREFIX] : stdin=JSON -> the value of the "KEY" field.
 #
-# ONE implementation of ONE offset convention. The old inline
-# `match(...)/substr(RSTART+n, RLENGTH-m)` extractions mixed two conventions:
-# when the regex did NOT include the closing quote of a string value but the
-# length still subtracted it, the value lost its last character (the message id
-# printed as msg_01HXYZABCDEF instead of msg_01HXYZABCDEFG) and every numeric
-# field lost a digit (time.updated 1792693166999 -> 79269316699, which then
-# compared as "older" and could classify a busy session as idle). Here the value
-# is located by the KEY and read to its natural end, so the length can never
-# disagree with the pattern.
+# The offset formula lives in the SHARED library scripts/_json.awk (the ONE
+# implementation of ONE offset convention), not here: the same formula was
+# duplicated in this file, in orchestrate.sh, in preflight.sh and in
+# watch_run.sh, and the copies had already DIVERGED (one of them could not
+# read a number at all, another stripped a number to its digits). The library
+# is prepended to the program by source concatenation, exactly like
+# _validators.awk is for the two validators (not with -f, which is not
+# portable when mixed with an inline program in mawk 1.3.3).
+#
+# The old inline `match(...)/substr(RSTART+n, RLENGTH-m)` extractions mixed
+# two conventions: when the regex did NOT include the closing quote of a
+# string value but the length still subtracted it, the value lost its last
+# character (the message id printed as msg_01HXYZABCDEF instead of
+# msg_01HXYZABCDEFG) and every numeric field lost a digit (time.updated
+# 1792693166999 -> 79269316699, which then compared as "older" and could
+# classify a busy session as idle). The value is located by the KEY and read
+# to its natural end, so the length can never disagree with the pattern.
 #
 # VALUE_PREFIX restricts the match to values starting with it (e.g. "msg_"),
 # so `id` never picks up a different id.
 json_get_field() {
-  awk -v key="$1" -v pre="${2:-}" '
-    { rest = $0
-      k = "\"" key "\""
-      while ((i = index(rest, k)) > 0) {
-        p = i + length(k)
-        while (p <= length(rest) && substr(rest, p, 1) ~ /[ \t]/) p++
-        if (substr(rest, p, 1) != ":") { rest = substr(rest, i + length(k)); continue }
-        p++
-        while (p <= length(rest) && substr(rest, p, 1) ~ /[ \t]/) p++
-        v = substr(rest, p)
-        rest = substr(rest, p)
-        c = substr(v, 1, 1)
-        if (c == "\"") {
-          if (pre != "" && substr(v, 2, length(pre)) != pre) continue
-          q = substr(v, 2); j = index(q, "\"")
-          if (j > 0) { print substr(q, 1, j - 1) } else { print q }
-          exit
-        }
-        if (c == "{" || c == "[") {
-          d = 0
-          for (n = 1; n <= length(v); n++) {
-            x = substr(v, n, 1)
-            if (x == c) d++
-            else if (x == (c == "{" ? "}" : "]")) { d--; if (d == 0) { print substr(v, 1, n); exit } }
-          }
-          print v
-          exit
-        }
-        if (pre != "" && substr(v, 1, length(pre)) != pre) continue
-        e = 1
-        while (e <= length(v) && substr(v, e, 1) !~ /[,}\]]/) e++
-        out = substr(v, 1, e - 1)
-        sub(/[ \t\r]+$/, "", out)
-        print out
-        exit
-      }
-    }'
+  # Fail closed HERE, where the library is actually needed: a missing library
+  # is a broken install, and a private copy of the formula is the drift this
+  # removes. Reporting it at the extraction (not at source time) keeps the
+  # cache-dir guard the reason a caller sources this file.
+  [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: %s/_json.awk\n' "${_JL_SELF:-scripts}" >&2; exit 2; }
+  awk -v key="$1" -v pre="${2:-}" "$_JSON_LIB"'
+    { json_field($0, key, pre); if (JSON_FOUND) { print JSON_VALUE; exit } }'
 }
 
 # --- kv cache -------------------------------------------------------------------

@@ -40,6 +40,7 @@ references/research-evidence.md
 references/subagent-contract.md
 references/trigger-tests.md
 references/triggers-es.md
+scripts/_json.awk
 scripts/_validators.awk
 scripts/dragon_name.sh
 scripts/orchestrate-darwin.sh

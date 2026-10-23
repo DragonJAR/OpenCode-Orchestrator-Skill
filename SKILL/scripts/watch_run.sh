@@ -49,42 +49,29 @@ case "$_wprobe" in *'"id":"ses_'*) : ;;
 esac
 START=$(date +%s)
 prev=""
-# ONE derived-offset extractor (the standalone copy of the formula in
-# os/_common.sh's json_get_field: the value starts at the key prefix and is
-# read to its natural end). The offsets are DERIVED, never hardcoded: a typo
+# ONE derived-offset extractor, the SHARED one (scripts/_json.awk, the same
+# library json_get_field uses): the value starts at the key prefix and is
+# read to its natural end. The offsets are DERIVED, never hardcoded: a typo
 # can no longer shift a field by one digit or one character -- the class that
 # truncated a millisecond timestamp and a message id in wait-idle.
-# This script is standalone by contract (it sources no library), so the
-# formula is repeated here, exactly like the assert_uint copy above.
+# The formula used to be repeated here (a FOURTH copy, next to the ones in
+# os/_common.sh, orchestrate.sh and preflight.sh); the copies had already
+# diverged, and this one stripped a number to its digits. It is now the same
+# library the rest of the skill uses, read from THIS directory (this script
+# is always invoked as "$SELF_DIR/watch_run.sh" and ships beside it).
+# It still sources no shell library: it stays POSIX sh + awk + curl, with no
+# python, and it fails closed if the library is missing.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+_JSON_LIB=""
+if [ -f "$SCRIPT_DIR/_json.awk" ]; then
+  _JSON_LIB=$(cat "$SCRIPT_DIR/_json.awk")
+else
+  printf '%s\n' "watch_run: ERROR: shared awk library missing: $SCRIPT_DIR/_json.awk" >&2
+  exit 2
+fi
 _wfield() {  # KEY JSON -> the value (string, number or raw array)
-  printf '%s' "$2" | awk -v key="$1" '
-    function field(s, key,   k, p, v, q, j, e, n, d, i, x) {
-      k = "\"" key "\""
-      p = index(s, k); if (!p) return ""
-      p += length(k)
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      if (substr(s, p, 1) != ":") return ""
-      p++
-      while (p <= length(s) && substr(s, p, 1) ~ /[ \t]/) p++
-      v = substr(s, p)
-      c = substr(v, 1, 1)
-      if (c == "\"") { q = substr(v, 2); j = index(q, "\""); return (j > 0 ? substr(q, 1, j - 1) : q) }
-      if (c == "[" || c == "{") {
-        d = 0
-        for (i = 1; i <= length(v); i++) {
-          x = substr(v, i, 1)
-          if (x == c) d++
-          else if (x == (c == "[" ? "]" : "}")) { d--; if (d == 0) return substr(v, 1, i) }
-        }
-        return v
-      }
-      e = 1
-      while (e <= length(v) && substr(v, e, 1) !~ /[,}\]]/) e++
-      n = substr(v, 1, e - 1)
-      gsub(/[^0-9].*$/, "", n)
-      return n
-    }
-    { print field($0, key) }'
+  printf '%s' "$2" | awk -v key="$1" "$_JSON_LIB"'
+    { json_field($0, key, ""); print JSON_VALUE }'
 }
 printf '%s\n' "watch_run: session=$SESSION deadline=${DEADLINE}s interval=${INTERVAL}s artifacts=$ARTIFACTS"
 while : ; do
