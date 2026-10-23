@@ -5,7 +5,7 @@ license: MIT
 compatibility: "Operating OpenCode V2 requires authorized access to an instance; without access, limit the work to planning. Validators: POSIX sh + awk, scripts with LF line endings (Windows: Git Bash or WSL)."
 metadata:
   author: DragonJAR.org
-  skill_version: "1.5.3"
+  skill_version: "1.5.4"
   category: workflow-automation
   tags: [opencode, orchestration, subagent, dag, session-management, parallel-execution, permissions]
 ---
@@ -59,7 +59,7 @@ The scripts under `scripts/` automate steps 2-8 of the playbook (P2–P8). Invok
 | 2 Preflight | `sh scripts/orchestrate.sh preflight [dir]` | Once per run before creating any session. Caches endpoint, version, `/openapi.json`, catalogs and the profile's model. |
 | 3 Identity | `sh scripts/orchestrate.sh self-check` | After preflight and before the first creation. Confirms OS, tools and cached state. |
 | 5 Root session (optional) | `orchestrate.sh ensure-root --title T` | Only if you need an explicit orchestrator session; in this harness it already exists. |
-| 5 Workers | `orchestrate.sh init-run --worker "T1" --worker "T2" --worker "T3" [--title ROOT] [--no-attach-tabs]` | Shortcut: ensure-root (only with `--title`) + N workers + attach-tabs in one call. **Default route.** One `--worker` per session (spaces are part of the title). Also `--workers "A, B, C"`. Requires `preflight` first; the gate provides `--tui-cwd`. |
+| 5 Workers | `orchestrate.sh init-run --worker "T1" --worker "T2" --worker "T3" [--title ROOT] [--no-attach-tabs]` | Shortcut: ensure-root (only with `--title`) + N workers + attach-tabs in one call. **Default route.** One `--worker` per session (spaces are part of the title). Also `--workers "A, B, C"`. They combine, in order: `--workers "A, B" --worker C` creates three. Requires `preflight` first; the gate provides `--tui-cwd`. |
 | 5 | `orchestrate.sh create-worker --title T [--agent A] [--model id@prov]` | Per worker when you prefer step by step or reuse the cached preflight. Dedup by title: reuses `empty`/`idle` sessions; on collision, `--force-new`. |
 | 5 Lookup | `orchestrate.sh session-id COMPACT_REF` | Resolve a `task_id` (`00`, `01`, `01s02`, `[01]`, `[01s02]`) to the raw `sessionID`: exact leading `[NN]` match; ambiguous (>1) fails closed (exit 1, use `ses_...`). One line on stdout, pipeable. Detail in [naming-convention.md](references/naming-convention.md#session-id-compact-reference-resolution). |
 | 5 Tabs (gate) | `orchestrate.sh tabs [--tui-cwd PATH]` | Queries the TUI gate **with no effects** before creating anything: live pids, real cwd, channel, version and `ready`/`blocked` with reason. Do not guess or invent a `--tui-cwd`: the gate already resolved it. |

@@ -6,6 +6,67 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-10-23
+
+Third pass, on a different axis. The first two passes swept the defect
+CLASSES of the history; this one sweeps the PROMISES — what the package says
+about itself against what the code does. The command table, the failure
+matrix, the exit codes and the flags are contracts, and a contract the code
+does not keep is a defect like any other.
+
+### Fixed
+**The tabs prune never ran.**
+`clean` prunes `tabs.json` under a lock, and the command under the lock was a
+shell FUNCTION (`py`). `lock_exec` launches the command with python's
+subprocess, WITHOUT a shell: a function cannot be launched, so the lock failed
+closed with `cannot run command: py` and the prune never happened — the tabs of
+the deleted sessions stayed in `tabs.json` forever, silently, because the prune
+is optional and nothing failed loudly. The cause is old: the CR fix of v1.5.0
+migrated every `python3 -c` to `py -c`, and one of those was inside the lock
+call. The command is `python3` again, with a BINARY write so the count the
+shell reads is LF-only on every platform. The promise `clean ... prunes
+tabs.json` is now kept.
+
+**`init-run` created fewer workers than asked for, without saying so.**
+The requested titles lived in TWO variables: the `--workers` group and the
+`--worker` group, and the second OVERWROTE the first. So
+`init-run --workers "A, B" --worker C` created ONE worker (C) and dropped A
+and B with no warning — and the `requested=` line printed the merged (already
+truncated) list, so the operator had no way to see the loss. The loose
+positional tokens were also joined with SPACES, so `init-run --workers "T1"
+T2 T3` created ONE worker named "T2 T3". The titles are now ONE ordered
+list, filled as the flags arrive, and the `requested=` line prints the list
+that is actually used. This is the same class as the "the loose tokens were
+discarded" defect of an earlier round, moved to another group: the group that
+was dropped changed, the silence did not.
+
+### Added
+- **A rule for the promises axis**: a flag written in the command table of
+  `SKILL.md` that the code never parses is now a hit of the class guard. The
+  table is a contract about the command surface, and a flag that is
+  documented but not implemented is a promise the code does not keep.
+- **A rule for the locked commands**: a command launched under `lock_exec`
+  that is a shell function is now a hit. The lock launches the command
+  without a shell, so a function cannot be launched at all — the class that
+  broke the tabs prune.
+- **Two regression tests**: `r9-worker-title-union` (the requested titles are
+  a union, in the order the flags were given) and `r9-tabs-prune-runs` (the
+  prune removes the tab of the deleted session and leaves the other one).
+  Both were run against the code BEFORE the fixes: they fail there and pass
+  here.
+- **A row in the failure matrix** for each symptom, so an operator who sees
+  it knows what it is and what to do.
+
+### Verification
+- Regression suite **35/35** (two new assertions), each run against the code
+  that must fail it.
+- The class sweep: 0 hits on the tree, and all **22** rules proved with
+  their own defect.
+- The failure matrix was checked row by row against the code: its claims
+  about the fixes hold, and the exit-code table it publishes
+  (0/2/3/4/5/6/70/71) is grounded in the code, including the `6` that comes
+  from the embedded python.
+
 ## [1.5.3] - 2026-10-23
 
 Second pass over the history. Every defect class in the project's log was
@@ -575,7 +636,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...v1.5.1

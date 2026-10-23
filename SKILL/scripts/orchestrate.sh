@@ -387,7 +387,7 @@ resolve_gate() {
 }
 
 sub_init_run() {
-  WORKERS=""; NO_ATTACH=0; TUI_CWD=""; TITLE=""; COUNT=""
+  NO_ATTACH=0; TUI_CWD=""; TITLE=""; COUNT=""
   parse_kv "$@"
   require_state
   # INCREMENTAL POOL SCALING: the deployed [NN] sessions are a pool that
@@ -408,17 +408,26 @@ sub_init_run() {
   MAXORD=$(pool_max_ordinal "$POOL")
   if [ -n "$COUNT" ]; then
     assert_uint --count "$COUNT"
-    i=0
+    i=0; _DN_LIST=""
     while [ "$i" -lt "$COUNT" ]; do
       i=$((i + 1))
       DN=$(sh "$SELF_DIR/dragon_name.sh" "$i" 2>/dev/null) || DN="Worker$i"
-      WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}$DN"
+      _DN_LIST="${_DN_LIST:+$_DN_LIST$NL}$DN"
     done
+    # the generated names come FIRST, the explicit ones follow in the order
+    # they were given (the list is one: see _wt_add in os/_common.sh)
+    WORKER_TITLES="${_DN_LIST}${WORKER_TITLES:+$NL$WORKER_TITLES}"
   fi
-  [ -n "$POSITIONAL" ] && WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}$POSITIONAL"
-  [ -n "$WORKER_TITLES" ] && WORKERS="$WORKER_TITLES"
-  [ -n "$WORKERS" ] || { printf '%s\n' '--count N or --worker "Title" (repeatable) required' >&2; exit 2; }
-  printf 'init-run: dir=%s os=%s pool_up_to=[%02d] requested=%s\n' "$PROJ_DIR" "$OS" "$MAXORD" "$(printf '%s' "$WORKERS" | tr '\n' ',')"
+  [ -n "$WORKER_TITLES" ] || { printf '%s\n' '--count N or --worker "Title" (repeatable) required' >&2; exit 2; }
+  # The list is captured HERE, in a local: the root creation below calls
+  # parse_kv again (for the root's own flags) and parse_kv RESETS the shared
+  # list, so the workers would be planned from an EMPTY list. The list is the
+  # plan; it must not depend on a later parse.
+  REQUESTED="$WORKER_TITLES"
+  # The list printed here is the list that is used: it used to be the MERGED
+  # value, so an operator whose --workers group was overwritten saw a request
+  # that was not the one they made.
+  printf 'init-run: dir=%s os=%s pool_up_to=[%02d] requested=%s\n' "$PROJ_DIR" "$OS" "$MAXORD" "$(printf '%s' "$REQUESTED" | tr '\n' ',')"
 
   # Tabs gate resolved ONCE (resolve_gate). Before, it was an optional step
   # silently skipped when --tui-cwd was missing; now the decision is data and
@@ -489,7 +498,7 @@ sub_init_run() {
   FAILED=0; REUSED=0; CREATED=0
   # Line-driven, not word-split: a title is "[NN] Name" and the space is part
   # of it. `for t in $WORKERS` shredded these into two sessions each.
-  WORKER_LIST=$(worker_list "$WORKERS")
+  WORKER_LIST=$(worker_list "$REQUESTED")
   [ -n "$WORKER_LIST" ] || { printf 'ERROR: --workers/--worker produced no valid titles\n' >&2; exit 2; }
   # A failure must stop the run. With `| while` the loop runs in a SUBSHELL:
   # `die`/`exit` only killed the subshell, the parent carried on and ended up
@@ -761,11 +770,20 @@ tabs_prune_ids() {
   [ -f "$_tj" ] || { printf '0\n'; return 0; }
   DELETED_IDS="$*"
   export DELETED_IDS
+  # The command under the lock is launched by python's subprocess WITHOUT a
+  # shell, so it must be an EXECUTABLE: a shell function (`py`) cannot be
+  # launched, and the lock failed closed with "cannot run command: py" -- so
+  # the prune NEVER ran and the tabs of the deleted sessions stayed in
+  # tabs.json forever. The CR fix of v1.5.0 migrated every `python3 -c` to
+  # `py -c` and broke this call without touching the code around it.
+  # The count the shell reads is written in BINARY, so it is LF-only on
+  # every platform (a text-mode print() ends the line with CRLF on Windows).
   lock_exec "$_tj" "${ORCHESTRATE_TABS_LOCK_TIMEOUT:-5}" \
-    py -c '
+    python3 -c '
 import json, os, sys
 deleted = set(os.environ.get("DELETED_IDS","").split())
-if not deleted or "" in deleted: print(0); raise SystemExit
+if not deleted or "" in deleted:
+    sys.stdout.buffer.write(b"0"); raise SystemExit
 p = sys.argv[1]
 with open(p, "r+") as f:
     try: d = json.load(f, strict=False)
@@ -779,7 +797,7 @@ with open(p, "r+") as f:
     if removed:
         f.seek(0); f.truncate()
         json.dump(d, f, indent=2)
-    print(removed)
+sys.stdout.buffer.write(str(removed).encode("utf-8"))
 ' "$_tj"
 }
 

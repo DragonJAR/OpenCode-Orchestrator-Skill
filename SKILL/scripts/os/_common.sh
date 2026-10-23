@@ -394,11 +394,38 @@ assert_value() {
     exit 2
   fi
 }
+# _wt_add TITLE -> append ONE title to the ordered list of requested workers.
+# _wt_add_list LIST -> append a comma separated LIST, in order.
+#
+# WHY ONE ORDERED LIST: the requested titles used to live in TWO variables
+# (the --workers group and the --worker group) and the second OVERWROTE the
+# first, so `init-run --workers "A, B" --worker C` created ONE worker (C) and
+# dropped A and B with no warning -- the same class as the "the loose tokens
+# were discarded" defect, moved to another group. The loose tokens were also
+# joined with SPACES, so "T1" "T2" "T3" became ONE title ("T2 T3"). One list,
+# built in the order the flags arrive, cannot lose a group.
+_wt_add() {
+  [ -n "${1:-}" ] || return 0
+  WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}$1"
+}
+_wt_add_list() {
+  _wl_rest="${1:-}"
+  while [ -n "$_wl_rest" ]; do
+    case "$_wl_rest" in
+      *,*) _wl_one="${_wl_rest%%,*}"; _wl_rest="${_wl_rest#*,}" ;;
+      *)   _wl_one="$_wl_rest"; _wl_rest="" ;;
+    esac
+    # the spaces that surround a comma are not part of the title
+    _wt_add "$(printf '%s' "$_wl_one" | sed 's/^[ \t]*//; s/[ \t]*$//')"
+  done
+}
 parse_kv() {
-  # POSITIONAL collects loose tokens. Before, `*) shift` discarded them
-  # silently, so `init-run --workers "T1" "T2" "T3"` created only T1 with no
-  # warning. They are now added to WORKERS (see sub_init_run).
-  POSITIONAL=""; WORKER_TITLES=""
+  # The requested worker titles are ONE ordered list (WORKER_TITLES), filled
+  # as the flags arrive: --workers "A, B" (a comma separated list), --worker
+  # "C" (repeatable) and the loose positional tokens (one title each) all
+  # land in it, in the order they were given. See _wt_add above for why it is
+  # ONE list and not two.
+  WORKER_TITLES=""
   # shellcheck disable=SC2034  # TITLE/AGENT/MODEL/WORKER_ID are populated by parse_kv and read by callers (sub_create_worker, sub_send_prompt, etc.); shellcheck can't see across function boundaries
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -414,10 +441,10 @@ parse_kv() {
       -i|--interval) assert_value --interval "$#"; INTERVAL="${2:-}"; shift 2 ;;
       -s) assert_value -s "$#"; SID="${2:-}"; shift 2 ;;
       -a) assert_value -a "$#"; ARTIFACT="${2:-}"; shift 2 ;;
-      --workers) assert_value --workers "$#"; WORKERS="${2:-}"; shift 2 ;;
+      --workers) assert_value --workers "$#"; _wt_add_list "${2:-}"; shift 2 ;;
       --count) assert_value --count "$#"; COUNT="${2:-}"; shift 2 ;;
-      --worker) assert_value --worker "$#"; WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${2:-}"; shift 2 ;;
-      --worker=*) WORKER_TITLES="${WORKER_TITLES:+$WORKER_TITLES$NL}${1#--worker=}"; shift ;;
+      --worker) assert_value --worker "$#"; _wt_add "${2:-}"; shift 2 ;;
+      --worker=*) _wt_add "${1#--worker=}"; shift ;;
       --prompt-file) assert_value --prompt-file "$#"; PROMPT_FILE="${2:-}"; shift 2 ;;
       --router-prompt) assert_value --router-prompt "$#"; ROUTER_PROMPT="${2:-}"; shift 2 ;;
       --no-router) NO_ROUTER=1; shift ;;
@@ -431,7 +458,7 @@ parse_kv() {
       --force) FORCE=1; shift ;;
       --) shift; break ;;
       -*) printf 'unknown flag: %s\n' "$1" >&2; exit 2 ;;
-      *) POSITIONAL="${POSITIONAL:+$POSITIONAL }$1"; shift ;;
+      *) _wt_add "$1"; shift ;;
     esac
   done
 }

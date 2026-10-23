@@ -623,12 +623,80 @@ def rule_r20(root, shipped, repo_files):
     return hits
 
 
+def rule_r21(root, shipped, repo_files):
+    """a flag documented in the command table that the code does not parse.
+
+    The command table in SKILL.md is a PROMISE about the command surface.
+    A flag that is written there but not parsed is a promise the code does
+    not keep: the operator types it, the parser does not know it, and the
+    run does something else.
+    """
+    skill = repo_files.get("SKILL/SKILL.md", "")
+    if not skill:
+        return SKIP
+    code = "\n".join(repo_files.get(f"SKILL/{r}") or ""
+                     for r in shipped if r.endswith((".sh", ".awk")))
+    hits = []
+    for m in re.finditer(r"^\|[^|]*\|[^|]*`orchestrate\.sh [a-z-]+([^`]*)`", skill, re.M):
+        row = m.group(1)
+        for flag in re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", row):
+            # a case branch: `--flag)`, `--flag=*)` or `-d|--flag)`
+            branch = re.search(r"^\s*(?:-[-\w]+\|)*" + re.escape(flag)
+                               + r"(?:\)|=\*\))", code, re.M)
+            if not branch:
+                hits.append(("SKILL.md", f"{flag} is documented but never parsed"))
+    return hits
+
+
+def rule_r22(root, shipped, repo_files):
+    """a command launched under lock_exec that is a SHELL FUNCTION.
+
+    lock_exec launches the command with python's subprocess, WITHOUT a
+    shell: a shell function cannot be launched, and the lock fails closed
+    with "cannot run command: <name>". The CR fix of v1.5.0 migrated every
+    `python3 -c` to `py -c` and one of those was inside a lock call, so the
+    tabs prune failed closed and the tabs of the deleted sessions stayed in
+    tabs.json forever -- silently, because the prune is optional.
+    """
+    funcs = set()
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        for _n, ln in code_lines(repo_files.get(f"SKILL/{rel}") or ""):
+            m = re.match(r"^([a-z_][a-z0-9_]*)\(\)\s*\{", ln)
+            if m:
+                funcs.add(m.group(1))
+    hits = []
+    for rel in shipped:
+        if not rel.endswith(".sh"):
+            continue
+        key = f"SKILL/{rel}"
+        lines = (repo_files.get(key) or "").splitlines()
+        for i, ln in enumerate(lines):
+            if "lock_exec " not in ln or ln.strip().startswith("#"):
+                continue
+            cmd = ln.split("lock_exec", 1)[1]
+            j = i
+            while cmd.rstrip().endswith("\\") and j + 1 < len(lines):
+                j += 1
+                cmd = cmd.rstrip()[:-1] + " " + lines[j]
+            cmd = re.sub(r'"[^"]*"', " ", cmd)
+            cmd = re.sub(r"'[^']*'", " ", cmd, flags=re.S)
+            m = re.search(r"(?<![\w./-])([a-z_][a-z0-9_]*)", cmd)
+            if m and m.group(1) in funcs:
+                hits.append((f"{key}:{i + 1}",
+                             f"lock_exec launches the shell function '{m.group(1)}' "
+                             f"(a function cannot be launched without a shell)"))
+    return hits
+
+
 DETECTORS = [
     ("R01", rule_r01), ("R02", rule_r02), ("R03", rule_r03), ("R04", rule_r04),
     ("R05", rule_r05), ("R06", rule_r06), ("R07", rule_r07), ("R08", rule_r08),
     ("R09", rule_r09), ("R10", rule_r10), ("R11", rule_r11), ("R12", rule_r12),
     ("R13", rule_r13), ("R14", rule_r14), ("R15", rule_r15), ("R16", rule_r16),
     ("R17", rule_r17), ("R18", rule_r18), ("R19", rule_r19), ("R20", rule_r20),
+    ("R21", rule_r21), ("R22", rule_r22),
 ]
 
 
@@ -763,6 +831,11 @@ MUTATIONS = {
                           '[ -n "$_dir_enc" ] || return 3\n', ""),
     "R20": lambda c: _append(c / "README.md",
                              "\nsh SKILL/scripts/validate_dag.sh  # or: bash SKILL/scripts/validate_dag.sh\n"),
+    "R21": lambda c: _resub(c / "SKILL/SKILL.md",
+                            r"\[--title ROOT\]", r"[--title ROOT] [--bogus-flag]"),
+    "R22": lambda c: _resub(c / "SKILL/scripts/orchestrate.sh",
+                            r"lock_exec \"\$_tj\" \"\$\{ORCHESTRATE_TABS_LOCK_TIMEOUT:-5\}\" \\\n    python3 -c",
+                            "lock_exec \"$_tj\" \"${ORCHESTRATE_TABS_LOCK_TIMEOUT:-5}\" \\\n    py -c"),
 }
 
 
