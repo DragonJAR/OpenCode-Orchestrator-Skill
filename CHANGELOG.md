@@ -6,6 +6,74 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-23
+
+Class sweep over the whole history: every defect class in the project's log was
+turned into a detector and run against the whole tree. Four instances were still
+open, and they are closed here. The classes are now guarded on every push, with a
+selftest that proves each rule can fail.
+
+### Fixed
+**A project path with a quote broke the clean lookup.**
+`clean` found the `[00]` orchestrator with a python block that SPLICED the project
+directory into the python source (`proj = "<path>"`). A path with a quote or a
+newline — both legal in a POSIX filename — produced a SyntaxError, the stderr was
+discarded and the empty result was reported as "no [00] orchestrator in this
+project": the wrong diagnosis, and `clean` could not be run on that project at
+all. The directory now travels through the ENVIRONMENT, the way the enumeration
+block right below it already did, and a parse failure is reported instead of
+being turned into a different message.
+
+**A page with a broken shape read as an empty pool.**
+`pool_list` piped the python into `while` and `sort`: the status of a pipeline
+is the LAST command's, so a parse failure returned rc 0 with an empty table. The
+pool then said "max ordinal 0" and the next worker reused `[01]` — the same class
+as the pool-ordinal defect of 1.5.0. The parse is now a step of its own whose
+status is kept, and the pool fails closed (rc 3) instead of answering "no
+workers".
+
+**The shared awk library was located by guessing.**
+`os/_common.sh` is SOURCED, so `$0` inside it is the path of the script that
+sourced it, not its own. The library (`scripts/_json.awk`) was therefore looked
+up by GUESS: first from `SELF_DIR`, then from the caller's own directory, then
+one level above it. A guess is not a contract — the same source could find the
+library in one place and miss it in another. It already cost one real failure:
+the CI step that sourced the file without `SELF_DIR` looked for the library in
+the shell's own directory and one level above it, and failed closed with
+"shared awk library missing" on all three runners. There is now ONE rule (the
+caller exports `SELF_DIR`, the directory that holds the library) and not meeting
+it fails closed with a message that says which rule to meet.
+
+**The ok-list swallowed the status of its own reader.**
+`clean` extracted the ids of the sessions it had really deleted with
+`awk ... 2>/dev/null; true | tr '\n' ' '`: the `true` swallowed the status of
+the `awk`, and the pipe hung off the `true`, so it never transformed the awk
+output at all. An unreadable log therefore read as "nothing was deleted", and the
+cache purge and the tabs prune were skipped while the command claimed it was
+done. The status is kept now, the pipe is where it belongs, and an unreadable
+log is reported.
+
+### Added
+- **A guard for the defect classes** (`tools/sweep-classes.sh`): one rule per class
+  in this project's history, run on every push. It is public (it is the gate) but
+  it is not part of the distributed package (the ZIP carries only the closed
+  list). Every rule resolves the class of what it looks at — a comment from code,
+  a definition from a call, a sourced file from an executed one — because a
+  detector that cries is worse than no detector: it gets ignored and then
+  disabled.
+- **A selftest for the guard** (`--selftest`): each rule is proved by
+  introducing its own defect into a copy of the tree and checking that the rule
+  fires, and that it does not fire on the clean tree. A guard that has never
+  been seen to fail is a hypothesis, not a guard. Two rules failed that proof on
+  their first run and were tightened until they were worth trusting.
+
+### Verification
+- Regression suite **32/32** (one new assertion: `r8-fail-closed-parsers`).
+- The new assertion was run against the code BEFORE these fixes: it fails there
+  and passes here, so it measures the defects and not the implementation.
+- The class sweep: 0 hits on the tree, and every one of the 12 rules proved with
+  its own defect.
+
 ## [1.5.1] - 2026-10-22
 
 Patch release over v1.5.0. Three paths that used to fail open now fail closed, the
@@ -457,7 +525,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.2...v1.5.0
 [1.0.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.0.1...v1.0.2

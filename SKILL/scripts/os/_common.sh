@@ -18,19 +18,27 @@ NL='
 case "$CACHE_DIR" in ''|/) printf "ERROR: no usable cache dir (CACHE_DIR='%s') \n" "$CACHE_DIR" >&2; exit 1;; esac
 # The shared awk library (scripts/_json.awk) holds the ONE JSON extraction
 # formula. This file is SOURCED, so $0 is the CALLER's path, not this file's:
-# the library is located from what the caller knows -- SELF_DIR (set by
-# orchestrate.sh and preflight.sh) or the caller's own directory (the
-# regression fixtures live in scripts/evals/fixtures/).
+# a sourced file CANNOT locate its siblings by itself. The rule is therefore
+# ONE: the caller exports SELF_DIR, the directory that holds the library
+# (scripts/). orchestrate.sh and preflight.sh do; the regression fixtures do.
+#
+# The old code ALSO tried the caller's own directory and one level above it.
+# That is a GUESS, not a contract: it resolves to whatever $0 happens to be,
+# so the same source could find the library in one place and miss it in
+# another. It already cost one real failure: the CI step that sourced this
+# file without SELF_DIR looked for the library in the shell's own directory
+# (/usr/bin) and one level above it (/) -- "shared awk library missing" on
+# all three runners. A guess is not a rule: now there is ONE way to point at
+# the library, and not meeting it fails closed with a message that says so.
+#
 # A missing library is NOT fatal HERE: sourcing this file must not fail for a
 # reason that has nothing to do with the cache. It is fatal where it is
 # actually needed -- at the extraction (see json_get_field), which reports it
 # with the same clear message.
 _JSON_LIB=""
-_JL_SELF="${SELF_DIR:-}"
-_JL_CALLER=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || _JL_CALLER=""
-for _jl in "$_JL_SELF/_json.awk" "$_JL_CALLER/_json.awk" "$_JL_CALLER/../../_json.awk"; do
-  if [ -f "$_jl" ]; then _JSON_LIB=$(cat "$_jl"); break; fi
-done
+if [ -n "${SELF_DIR:-}" ] && [ -f "$SELF_DIR/_json.awk" ]; then
+  _JSON_LIB=$(cat "$SELF_DIR/_json.awk")
+fi
 # The cache DIR is prepared HERE (the only writer of the cache keys), so that
 # os/_paths.sh stays side-effect free and can be sourced by read-only scripts
 # (the TUI detector).
@@ -257,7 +265,7 @@ json_get_field() {
   # is a broken install, and a private copy of the formula is the drift this
   # removes. Reporting it at the extraction (not at source time) keeps the
   # cache-dir guard the reason a caller sources this file.
-  [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: %s/_json.awk\n' "${_JL_SELF:-scripts}" >&2; exit 2; }
+  [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: %s/_json.awk (the caller must export SELF_DIR=<the scripts directory>)\n' "${SELF_DIR:-scripts}" >&2; exit 2; }
   awk -v key="$1" -v pre="${2:-}" "$_JSON_LIB"'
     { json_field($0, key, pre); if (JSON_FOUND) { print JSON_VALUE; exit } }'
 }
@@ -888,7 +896,13 @@ pool_list() {
   # tokens.output), so `s.get('output', 0)` was always 0 and the dedup
   # collision guard could never see prior work; the fallback restores the
   # fail-closed round-5 semantics (out > 0 and no time.idle => running).
-  printf '%s' "$RESP" | py -c "
+  # The parse is a SEPARATE step whose exit code is KEPT: inside a pipeline
+  # the status is the LAST command's (sort), so a parse failure read as an
+  # EMPTY POOL with rc 0 -- and the pool then said "max ordinal 0" and the
+  # next worker reused [01] (the same class as the pool-ordinal defect of
+  # 1.5.0). The first page is validated as JSON but not as an OBJECT, so a
+  # serve that answers with an array reaches this parse.
+  _rows=$(printf '%s' "$RESP" | py -c "
 import json, sys, re
 d = sys.argv[1]
 data = json.loads(sys.stdin.read(), strict=False).get('data', [])
@@ -907,7 +921,8 @@ for s in data:
                      str(out), m.group(2) or '',
                      str(tm.get('idle', 0) or 0), str(tm.get('updated', 0) or 0),
                      str(tm.get('created', 0) or 0), '1' if s.get('outcome') else '0']))
-" "$PROJ_DIR" | while IFS= read -r _row; do
+" "$PROJ_DIR") || return 3
+  printf '%s\n' "$_rows" | while IFS= read -r _row; do
     [ -n "$_row" ] || continue
     _col() { printf '%s' "$_row" | cut -f"$1"; }
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

@@ -93,6 +93,14 @@ jobs:
           n=$(printf '{"id":"ses_x","n":7}' | json_get_field n)
           [ "$n" = "7" ] || { echo "wrong extracted number: [$n]"; exit 1; }
           echo "CRLF proxy PASS"
+      - name: Defect-class sweep (the classes that actually bit this project)
+        run: |
+          set -e
+          # The selftest comes FIRST: it proves each rule can fail (a rule
+          # that has never been seen to fail is a hypothesis, not a guard).
+          # Then the sweep runs over the tree itself.
+          sh tools/sweep-classes.sh --selftest
+          sh tools/sweep-classes.sh
       # Note: validate_dag.sh and validate_ledger_closed.sh require a
       # ledger fixture under runs/, which is gitignored (the directory
       # contains prior run evidence; AGENTS.md treats runs/ as

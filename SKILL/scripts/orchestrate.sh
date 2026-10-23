@@ -803,15 +803,23 @@ sub_clean() {
     # unchecked fetch reported a transport failure as the same message.
     _orch_all=$(project_sessions_json) \
       || die "GET /api/session failed; cannot find the [00] orchestrator"
-    ORCH_SID=$(printf '%s' "$_orch_all" | py -c '
-import json, sys, re
-proj = "'"$PROJ_DIR"'"
+    # The project directory goes through the ENVIRONMENT, not interpolated
+    # into the python source: a path with a quote or a newline (both legal in
+    # a POSIX filename) produced a SyntaxError, and the stderr was discarded,
+    # so an empty result was reported as "no [00] orchestrator in this
+    # project" -- the wrong diagnosis for a path that is merely unusual, and
+    # clean could not be run at all on it. The TO_DELETE block below already
+    # passed PROJ_DIR through the environment (DRY: one way, not two).
+    ORCH_SID=$(printf '%s' "$_orch_all" | PROJ_DIR="$PROJ_DIR" py -c '
+import json, sys, re, os
+proj = os.environ["PROJ_DIR"]
 ss = json.load(sys.stdin, strict=False).get("data", [])
 cands = [s for s in ss if s.get("location",{}).get("directory","") == proj
          and re.match(r"^\[00\]", s.get("title",""))]
 cands.sort(key=lambda s: s.get("time",{}).get("created", 0), reverse=True)
 if cands: print(cands[0]["id"])
-' 2>/dev/null)
+') \
+    || die "clean: could not parse the session list to find the [00] orchestrator (the error above says why)"
   fi
   [ -n "$ORCH_SID" ] || die 'clean: no [00] orchestrator in this project; pass --orchestrator SID'
   case "$ORCH_SID" in ses_*) : ;; *) die 'clean: --orchestrator must have the ses_ prefix' ;; esac
@@ -995,7 +1003,17 @@ for sid in order:
   # (use the ok lines from TMP, not the full TO_DELETE plan). This keeps
   # tabs.json consistent with the live state: a session that failed to
   # delete keeps its tab entry until the user retries or cleans manually.
-  DELETED_IDS=$(awk '$1 == "ok" {print $2}' "$TMP" 2>/dev/null; true | tr '\n' ' ')
+  # The awk exit code is KEPT, so an unreadable log is reported instead of
+  # being read as "nothing was deleted": DELETED_IDS empty means the cache
+  # purge and the tabs prune are skipped, and the command would still claim
+  # it was done (the same class as the count check above). The old line was
+  # `awk ... 2>/dev/null; true | tr '\n' ' '`: the `true` swallowed awk's
+  # status and the `tr` hung off the `true`, so it never transformed the
+  # awk output at all. Both consumers (the `for` below and tabs_prune_ids,
+  # which splits on any whitespace) accept the newline-separated form, so
+  # the pipe is not needed.
+  DELETED_IDS=$(awk '$1 == "ok" {print $2}' "$TMP" 2>/dev/null) \
+    || die "clean: cannot read the deletion log; the cache purge and the tabs prune are SKIPPED"
   rm -f "$TMP"
   if [ -n "$DELETED_IDS" ]; then
     # C-12: purge the cache pointers of the ACTUALLY deleted sessions only

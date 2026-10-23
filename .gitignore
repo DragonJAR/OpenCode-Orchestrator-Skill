@@ -12,6 +12,10 @@
 !/SKILL/**
 !/.github/
 !/.github/**
+# The defect-class guard: public (it is the gate that runs on every push) but
+# NOT part of the distributed package (the ZIP carries only the closed list).
+!/tools/
+!/tools/**
 
 # Maintainer-internal: the regression suite and .agents/ are not published
 SKILL/scripts/evals/**
