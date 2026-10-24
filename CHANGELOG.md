@@ -6,6 +6,71 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-10-23
+
+Dead-code sweep. The package was read function by function and flow by flow
+looking for code that nothing uses, and the answer is that **the distributed
+code has no orphans**: every one of the 68 functions it defines is called, and
+called from a path that is reachable from an entry point; every file it ships
+has an inbound reference; every environment variable it promises is read; and
+no variable is assigned and never read. What the sweep did find was outside the
+package, and one of those findings was a **missing assertion**, not a missing
+line.
+
+### Fixed
+**The Git Bash simulation computed the converted path and never used it.**
+The Windows simulation derived the drive form of the tabs path (`TAB_WIN` and
+friends) and then asserted on the ORIGINAL path. The `cygpath` stub
+materialises the drive as a symlink to the MSYS root, so both paths name the
+SAME file and the assertion could not tell whether the conversion happened at
+all — the very thing the fixture claims to guard ("the check, the lock and the
+write must name the same file"). A second stub that does NOT materialise the
+drive makes the converted path a different file, and the merge then has to
+write there and leave the original untouched. That case is now asserted, and
+it was proved by moving the existence check back before the conversion: the
+fixture fails with `tabs_status=no-tui`, which is the exact symptom of the
+defect of 1.5.0.
+
+**A line that looked dead was load-bearing.** The XOS-04 fixture captured the
+output of `cache_put` into a variable it never read, which the linter duly
+flagged. The capture is not inert: `cache_write`'s guard calls `die`, and
+`die` EXITS — inside a command substitution that exit only ends the SUBSHELL,
+so the capture is what lets the fixture go on and check the exit code and the
+stderr marker. Removing it took the whole fixture with it. The capture is
+restored and the reason is written where the next reader will find it.
+
+### Added
+- **A CI step that fails on a dead variable** (shellcheck `SC2034`) in the
+  shipped tree. `SC2034` is a *warning*, so the error-level lint the CI has
+  always run never saw it; a variable that is assigned and never read is dead
+  code, and this is what keeps it from coming back. Only `SC2034` is checked:
+  it is a stable check, so a newer shellcheck cannot turn the build red for
+  an unrelated warning.
+- The local recipe (`.agents/maintenance/testing-and-iteration.md`) now
+  carries the warning-level lint and the class sweep, because the regression
+  net is local and the CI cannot see it — and it records the two lessons of
+  this round: a line that looks inert can be holding an `exit` in place, and
+  a variable that is computed and never used can be the intent of an
+  assertion that was never written.
+
+### Removed
+- Four `.bak` copies of live scripts, on disk and in no repository: two
+  `.authquote.bak` next to the scripts they predate and two
+  `.prototype-v0.bak` in the maintainer directory. Nothing referenced them,
+  they are not in the closed list, so they never shipped; and each one is
+  byte-identical to a commit in the history (`ff38a8c`, `04d7565`), so the
+  history still holds every version they were keeping.
+
+### Verification
+- Regression suite **35/35**, with the Windows simulation now asserting the
+  conversion (three new checks) and the new case proved against the code that
+  must fail it.
+- The class sweep: 0 hits, all 22 rules proved with their own defect.
+- The new CI step was run with a dead variable introduced: it catches it.
+- The dead-code audit itself: 68/68 functions reachable and called, 0 unused
+  variables in the shipped tree, 0 shipped files without an inbound
+  reference, 0 promised environment variables unread.
+
 ## [1.5.4] - 2026-10-23
 
 Third pass, on a different axis. The first two passes swept the defect
@@ -636,7 +701,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.1...v1.5.2

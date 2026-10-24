@@ -93,6 +93,26 @@ jobs:
           n=$(printf '{"id":"ses_x","n":7}' | json_get_field n)
           [ "$n" = "7" ] || { echo "wrong extracted number: [$n]"; exit 1; }
           echo "CRLF proxy PASS"
+      - name: No dead variable in the shipped tree (shellcheck SC2034)
+        run: |
+          set -e
+          # SC2034 is a WARNING, so the error-level lint above never saw it: a
+          # variable that is assigned and never read is dead code, and this
+          # step is what keeps it from coming back. Only SC2034 is checked
+          # here (it is a stable check, so a newer shellcheck cannot turn the
+          # build red for an unrelated warning).
+          failed=0
+          for f in $(find SKILL/scripts -type f -name '*.sh' | sort); do
+            if shellcheck --severity=warning "$f" 2>&1 | grep -q 'SC2034'; then
+              shellcheck --severity=warning "$f" 2>&1 | grep -B 3 'SC2034' || true
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "ERROR: a variable is assigned and never read (SC2034): dead code"
+            exit 1
+          fi
+          echo "no dead variables in the shipped tree"
       - name: Defect-class sweep (the classes that actually bit this project)
         run: |
           set -e
