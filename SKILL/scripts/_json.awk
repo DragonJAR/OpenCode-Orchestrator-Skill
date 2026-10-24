@@ -67,6 +67,13 @@ function json_field(rest, key, pre,   k, i, p, v, q, j, c, d, n, x, e) {
   }
 }
 
+BEGIN {
+  # The canonical order of the session routes: the list is a fact about the
+  # skill, so it must read the same whatever order the schema lists them.
+  _jr_order[1] = "create";  _jr_order[2] = "children"; _jr_order[3] = "send"
+  _jr_order[4] = "read";    _jr_order[5] = "state";    _jr_order[6] = "delete"
+}
+
 # json_route_label(METHOD, PATH) -> the skill's name for a session route, or
 # "" when the route is not one of them. The table lives HERE so that the
 # route set is one fact, not one per caller.
@@ -82,16 +89,20 @@ function json_route_label(meth, path) {
 
 # json_route_labels(RECORD) -> the labels a route record publishes, comma
 # separated. RECORD is one route of the paths object ("/api/x":{"get":{...}).
-function json_route_labels(rec,   path, rest, meth, key, lbl, out) {
+function json_route_labels(rec,   path, rest, meth, lbl, i, out) {
   path = rec
   sub(/":\{.*$/, "", path)
   rest = rec
   while (match(rest, /"(get|post|delete|patch|put)":/)) {
     meth = toupper(substr(rest, RSTART + 1, RLENGTH - 3))
     lbl = json_route_label(meth, path)
-    if (lbl != "") out = out (out == "" ? "" : ",") lbl
+    if (lbl != "") _jr_found[lbl] = 1
     rest = substr(rest, RSTART + RLENGTH)
   }
+  # The canonical order, not the document order: the list is a fact about the
+  # skill, so it must read the same whatever order the schema lists.
+  out = ""
+  for (i = 1; i <= 6; i++) if (_jr_found[_jr_order[i]]) out = out (out == "" ? "" : ",") _jr_order[i]
   return out
 }
 

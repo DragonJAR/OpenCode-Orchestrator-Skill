@@ -176,7 +176,8 @@ printf 'agents_primary=%s\nagents_subagent=%s\n' "${P:-none}" "${S:-none}"
 # PUBLISHED routes are listed, so a missing one is simply absent.
 _session_routes() {
   printf '%s' "$SCHEMA_BODY" | sed 's/},"\(\/[a-z][a-z]*\/\)/}\n\1/g' | awk "$_JSON_LIB"'
-    /^\/api\/session/ { _l = json_route_labels($0); if (_l != "") print _l }' | paste -sd, -
+    /^\/api\/session/ { _l = json_route_labels($0) }
+    END { print _l }'
 }
 printf 'session_routes=%s\n' "$(_session_routes)"
 
