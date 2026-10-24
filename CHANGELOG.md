@@ -49,7 +49,9 @@ cheaper. This release adds that path, and the guards that keep it honest.
 - The two new scans (the routes and the subagent permissions) live in
   `scripts/_json.awk`, next to the extraction formula they use: the first
   version of them re-implemented the formula in the preflight, and the class
-  guard caught it (R14) before it was published.
+  guard caught it (R14) before it was published. The routes are printed in
+  the canonical order (`create,children,send,read,state,delete`), not in the
+  order the schema happens to list them: the list is a fact about the skill.
 
 ### Verification
 - Regression suite **36/36**; the class sweep 0 hits with all 22 rules proved
