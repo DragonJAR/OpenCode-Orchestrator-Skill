@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-10-24
+
+The defect-class guard left the public repository. It was always a maintainer
+tool — the same kind of thing the regression suite has been since the
+beginning — and the public repository carries the skill, its documentation and
+the workflow, not the internals of the process that produced them.
+
+### Removed
+- **The `tools/` directory** (the class guard and its engine): one rule per
+  class in this project's history, with a selftest that proves each rule can
+  fail by introducing its own defect. It is maintainer-internal now, like the
+  regression suite, and it runs locally. The workflow cannot run it any more
+  (a private file is not in its checkout), so from here on the class sweep is
+  a LOCAL gate; the CI keeps the checks it can run on its own: shellcheck,
+  `sh -n`, the package build, the Windows line-ending proxy and the
+  dead-variable check.
+- Nothing else. The package, the documentation and the skill's behaviour are
+  untouched: this release changes no line of the distributed code.
+
+### Fixed
+- **The workflow called a file that was not in the repository.** The moment the
+  directory went away, the guard's own rule ("the CI using a file that is not
+  published") fired on the workflow — which is exactly what that rule is for,
+  and the reason it was worth writing.
+
+### Verification
+- The class sweep, from its new private home: 0 hits, all 22 rules proved
+  with their own defect.
+- Regression suite 35/35, shellcheck and `sh -n` clean, the structural
+  validator 7/7, and the package build.
+- The CI in the three real runners, with the step that referenced the removed
+  directory taken out.
+
 ## [1.5.5] - 2026-10-23
 
 Dead-code sweep. The package was read function by function and flow by flow
@@ -141,8 +174,8 @@ became rules. **No new live defect was found**: all eight are closed, and
 each one now has a rule that can actually fail.
 
 ### Added
-- **Eight more rules** in the class guard (`tools/sweep-classes.sh`), each one
-  proved by introducing its own defect:
+- **Eight more rules** in the defect-class guard (maintainer-internal since
+  1.5.6), each one proved by introducing its own defect:
   a bash-only construct in a script that declares POSIX sh (the CI only
   linted in bash mode, so a bashism reached a dash runner and broke there
   only); the JSON extraction formula outside the shared library; a JSON parse
@@ -230,11 +263,11 @@ done. The status is kept now, the pipe is where it belongs, and an unreadable
 log is reported.
 
 ### Added
-- **A guard for the defect classes** (`tools/sweep-classes.sh`): one rule per class
-  in this project's history, run on every push. It is public (it is the gate) but
-  it is not part of the distributed package (the ZIP carries only the closed
-  list). Every rule resolves the class of what it looks at — a comment from code,
-  a definition from a call, a sourced file from an executed one — because a
+- **A guard for the defect classes**: one rule per class in this project's
+  history. It was public and ran on every push in 1.5.2-1.5.5; since 1.5.6 it
+  is maintainer-internal, like the regression suite, and runs locally. Every
+  rule resolves the class of what it looks at — a comment from code, a
+  definition from a call, a sourced file from an executed one — because a
   detector that cries is worse than no detector: it gets ignored and then
   disabled.
 - **A selftest for the guard** (`--selftest`): each rule is proved by
@@ -701,7 +734,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.6...HEAD
+[1.5.6]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...v1.5.6
 [1.5.5]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.2...v1.5.3
