@@ -66,3 +66,54 @@ function json_field(rest, key, pre,   k, i, p, v, q, j, c, d, n, x, e) {
     JSON_FOUND = 1; return
   }
 }
+
+# json_route_label(METHOD, PATH) -> the skill's name for a session route, or
+# "" when the route is not one of them. The table lives HERE so that the
+# route set is one fact, not one per caller.
+function json_route_label(meth, path) {
+  if (meth == "POST"   && path == "/api/session") return "create"
+  if (meth == "GET"    && path == "/api/session") return "children"
+  if (meth == "POST"   && path == "/api/session/{sessionID}/prompt") return "send"
+  if (meth == "GET"    && path == "/api/session/{sessionID}/message") return "read"
+  if (meth == "GET"    && path == "/api/session/{sessionID}") return "state"
+  if (meth == "DELETE" && path == "/api/session/{sessionID}") return "delete"
+  return ""
+}
+
+# json_route_labels(RECORD) -> the labels a route record publishes, comma
+# separated. RECORD is one route of the paths object ("/api/x":{"get":{...}).
+function json_route_labels(rec,   path, rest, meth, key, lbl, out) {
+  path = rec
+  sub(/":\{.*$/, "", path)
+  rest = rec
+  while (match(rest, /"(get|post|delete|patch|put)":/)) {
+    meth = toupper(substr(rest, RSTART + 1, RLENGTH - 3))
+    lbl = json_route_label(meth, path)
+    if (lbl != "") out = out (out == "" ? "" : ",") lbl
+    rest = substr(rest, RSTART + RLENGTH)
+  }
+  return out
+}
+
+# json_subagent_perms(RECORD) -> "<verdict>|<child types>" for one agent
+# record: the effective `subagent` permission, which is the precondition of
+# the two-level minimum (R3d). "yes|no|unknown" and the allowed child agent
+# ids ("any" when the rule is the wildcard).
+function json_subagent_perms(rec,   rest, seg, res, list, deny_any, allow_any, verdict) {
+  rest = rec
+  while (match(rest, /"action":"subagent","resource":"[^"]*","effect":"(allow|deny)"/)) {
+    seg = substr(rest, RSTART, RLENGTH)
+    res = seg
+    sub(/^"action":"subagent","resource":"/, "", res)
+    sub(/","effect".*$/, "", res)
+    if (seg ~ /"effect":"deny"/) { if (res == "*") deny_any = 1 }
+    else if (res == "*") allow_any = 1
+    else list = list (list == "" ? "" : ",") res
+    rest = substr(rest, RSTART + RLENGTH)
+  }
+  verdict = "unknown"
+  if (deny_any) verdict = "no"
+  else if (list != "" || allow_any) verdict = "yes"
+  if (allow_any && list == "") list = "any"
+  return verdict "|" list
+}

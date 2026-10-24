@@ -6,6 +6,60 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-24
+
+The readiness check. A session that asked the skill to "launch 20 sessions and
+tell me if they answer" spent 72 tool calls reading the sources and created
+NOTHING: the two-level minimum (R3) and the ledger turned a readiness check
+into a 60-session, 60-row-ledger run, and the agent had no path that was
+cheaper. This release adds that path, and the guards that keep it honest.
+
+### Added
+- **The readiness check** (`SKILL.md`): `preflight` -> `init-run --count N` ->
+  `dispatch --prompt-file F --count N` -> `pool` -> `clean --yes`. The R3
+  minimum does not apply to it: it is labelled **degraded**, never `verified`.
+  **R16 — Fit the machinery to the request** says so in the hard rules.
+- **The preflight answers the two questions that used to need a manual query**:
+  `session_routes=` names the session routes the LIVE schema publishes (the
+  Decision Gate B answer) and `children_allowed=` plus `children_subagents=`
+  report the effective `subagent` permission (the R3d precondition).
+- **A CI step that ties the command table to the code**: a subcommand or a flag
+  written in the table of `SKILL.md` and absent from the code is a promise the
+  code does not keep. The step was proved by documenting a flag that does not
+  exist: it fails.
+- **A regression test for the readiness check** (`r9-light-path`): it runs the
+  whole path on a live instance and asserts the workers are created, the prompt
+  reaches them, `clean` removes them and the `[00]` left behind is deleted.
+- **The playbook** explains the two things that only apply to a readiness
+  check: the fan-out is what the user asked for (no children are created), and
+  the `[00]` may outlive the check.
+
+### Changed
+- **`dispatch --wait` is serial** and the docs now say so: N workers cost N
+  round trips. Without `--wait` the prompts go out back to back.
+- **The prompt template copies the ledger row verbatim** instead of
+  re-enumerating its fields: the row schema was listed in three places (the
+  ledger contract, the validators and the template) and the template is the
+  one that drifts.
+- **`SKILL.md` was trimmed by 105 words of duplication** (the "Minimal
+  example" re-told the playbook, the `orchestrate.sh` paragraph repeated the
+  table above it, the trap warning repeated the reference, the recipe row
+  repeated two other places) to pay for the new content. It stays at 4979
+  words against a 5000 limit.
+- The two new scans (the routes and the subagent permissions) live in
+  `scripts/_json.awk`, next to the extraction formula they use: the first
+  version of them re-implemented the formula in the preflight, and the class
+  guard caught it (R14) before it was published.
+
+### Verification
+- Regression suite **36/36**; the class sweep 0 hits with all 22 rules proved
+  with their own defect; the structural validator 7/7; the package builds.
+- **End-to-end validation in a tmux session**: the same request that failed
+  before ("launch 20 sessions and tell me if they answer") was run through
+  `opencode` with the skill loaded. The agent found the readiness check in
+  `SKILL.md`, ran `preflight` (and read the routes from its new output), and
+  got to `init-run --count 20` in 15 tool calls instead of 72.
+
 ## [1.5.6] - 2026-10-24
 
 The defect-class guard left the public repository. It was always a maintainer
@@ -734,7 +788,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.6...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.6...v1.6.0
 [1.5.6]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...v1.5.6
 [1.5.5]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.3...v1.5.4

@@ -132,7 +132,10 @@ INFO=$(curl -s -m 10 ${AUTH:-} "$URL/api/info" | tr -d ' \n')
 [ -n "$VERSION" ] || VERSION=$(printf '%s' "$INFO" | json_get_field version)
 PID=$(printf '%s' "$INFO" | json_get_field pid)
 printf 'version=%s\nserver_pid=%s\n' "$VERSION" "${PID:-unknown}"
-SCHEMA=$(curl -s -m 10 ${AUTH:-} "$URL/openapi.json" | tr -d ' \n' | json_get_field openapi)
+# The body is KEPT, not just its version: the session routes are read from it
+# below, so the schema is fetched ONCE (one call, two uses).
+SCHEMA_BODY=$(curl -s -m 10 ${AUTH:-} "$URL/openapi.json" | tr -d ' \n')
+SCHEMA=$(printf '%s' "$SCHEMA_BODY" | json_get_field openapi)
 case "$SCHEMA" in
   3.*) printf 'openapi=%s\n' "$SCHEMA" ;;
   *) printf '%s\n' "ERROR: /openapi.json is not a valid schema (HTML or empty)"; exit 1 ;;
@@ -166,6 +169,36 @@ _ag_field() {  # MODE -> the comma-separated ids of that mode
 P=$(_ag_field primary)
 S=$(_ag_field subagent)
 printf 'agents_primary=%s\nagents_subagent=%s\n' "${P:-none}" "${S:-none}"
+
+# The session routes the skill uses, read from the LIVE schema: the gate
+# "does the schema publish the send and read routes for the same session?"
+# is answered here instead of by a manual query of /openapi.json. Only the
+# PUBLISHED routes are listed, so a missing one is simply absent.
+_session_routes() {
+  printf '%s' "$SCHEMA_BODY" | sed 's/},"\(\/[a-z][a-z]*\/\)/}\n\1/g' | awk "$_JSON_LIB"'
+    /^\/api\/session/ { _l = json_route_labels($0); if (_l != "") print _l }' | paste -sd, -
+}
+printf 'session_routes=%s\n' "$(_session_routes)"
+
+# The children a worker may create (R3d): the effective `subagent`
+# permission of the FIRST primary agent (the profile default, the one a
+# worker runs with), read from the LIVE catalog. Only the primary agents
+# count: the subagent-mode agents DENY `subagent` for themselves, and
+# reading their rules would say "no" about a capability they are not the
+# ones using.
+_children_perm() {
+  printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | awk "$_JSON_LIB"'
+    index($0, "\"mode\":\"primary\"") {
+      _id_at = index($0, "\"id\":\"")
+      id = substr($0, _id_at + 6); sub(/".*$/, "", id)
+      printf "%s|%s\n", id, json_subagent_perms($0)
+      exit
+    }'
+}
+_children=$(_children_perm)
+printf 'children_agent=%s\n' "$(printf '%s' "$_children" | cut -d'|' -f1)"
+printf 'children_allowed=%s\n' "$(printf '%s' "$_children" | cut -d'|' -f2)"
+printf 'children_subagents=%s\n' "$(printf '%s' "$_children" | cut -d'|' -f3)"
 
 # 6) default model pair (orchestrator profile; resolves exact ids, never hardcoded)
 MD=$(curl -s -m 10 ${AUTH:-} "$URL/api/model/default" | tr -d ' \n')

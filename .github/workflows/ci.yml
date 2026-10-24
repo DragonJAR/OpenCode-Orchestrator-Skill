@@ -113,6 +113,39 @@ jobs:
             exit 1
           fi
           echo "no dead variables in the shipped tree"
+      - name: The command table matches the code
+        run: |
+          set -e
+          # The command table in SKILL.md is a PROMISE about the command
+          # surface. A subcommand or a flag written there and absent from the
+          # code is a promise the code does not keep.
+          python3 - <<'PY'
+          import re, pathlib, sys
+          root = pathlib.Path("SKILL")
+          skill = (root / "SKILL.md").read_text()
+          code = "\n".join(p.read_text() for p in sorted(root.rglob("*.sh")))
+          bad, seen = [], set()
+          for line in skill.splitlines():
+              if not line.startswith("|") or "orchestrate.sh" not in line:
+                  continue
+              for span in re.findall(r"`([^`]+)`", line):
+                  m = re.search(r"orchestrate\.sh ([a-z-]+)([^`]*)", span)
+                  if not m:
+                      continue
+                  cmd, flags = m.group(1), m.group(2)
+                  if (cmd, flags) in seen:
+                      continue
+                  seen.add((cmd, flags))
+                  if not re.search(r"^  " + re.escape(cmd) + r"\)", code, re.M):
+                      bad.append(f"subcommand {cmd}: not in the dispatch")
+                  for f in sorted(set(re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", flags))):
+                      if not re.search(re.escape(f) + r"(\)|=\*\))", code):
+                          bad.append(f"flag {f} (of {cmd}): no parse branch")
+          print(f"command-table rows checked: {len(seen)}")
+          for b in bad:
+              print("  " + b)
+          sys.exit(1 if bad else 0)
+          PY
       # Note: the defect-class guard (one rule per class in this project's
       # history) is MAINTAINER-INTERNAL, like the regression suite: it lives
       # with the other private maintenance tools and is not in this

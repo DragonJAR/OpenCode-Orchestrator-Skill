@@ -11,6 +11,20 @@ Workflow for OpenCode V2. The active runtime is the authority: confirm server, `
 - **Verification:** the task needs multi-session coordination, delegation, or reconciliation. For single-session work, reply inline.
 - **Typical errors:** triggering on a loose keyword → reply inline; splitting a trivial unit → solve it directly.
 
+### If the request is a readiness check
+
+Some requests are not a run: "launch N sessions and tell me if they answer" asks
+for availability, not for deliverables. For those the two-level minimum (R3) does
+not apply and the light path in SKILL.md is enough. Two things only apply here:
+
+- **The fan-out is what you asked for.** `init-run --count N` creates N workers;
+  in a real run each of them would coordinate two children, so state that the N
+  sessions are workers and that no children are created.
+- **The `[00]` may outlive the check.** `clean` removes the workers and their
+  subagents, not the orchestrator itself: if there was no `root_session_hint`,
+  `init-run` created a `[00] Orchestrator` session that stays alive; delete it
+  with `delete-session --session <SID> --yes` (the run prints its `sessionID`).
+
 ## Step 2: Preflight of real capabilities
 
 Before creating tasks, consult the catalog, `/openapi.json` (it only counts if it is OpenAPI JSON; an HTML response is not a schema, see [Contract discovery](api-and-sessions.md#contract-discovery)), and the active client/runtime interface. For each operation, record the exact advertised name, its arguments, and the evidence that it exists:

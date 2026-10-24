@@ -34,8 +34,8 @@ Criterion: [concrete condition checkable by the orchestrator].
 
 Coordination requirement: `run.min_subagents_per_worker=2`. The orchestrator has already registered and pre-authorized at least two child tasks; execute only the following rows and scopes, without changing `task_id`, `criterion`, location, or permissions:
 When launching each child with the `subagent` tool, pass `description` equal to its row's `task_id`: the orchestrator maps `Session.Info.title` from `GET /api/session?parentID=` to the rows (the ID the worker reports is not enough, R14).
-- [full row of child 1: task_id, task_kind=subagent, parent_task_id, parentID, sessionID=null, location_directory, agent_id, dependencias, scope_escritura, output_path, criterion]
-- [full row of child 2: task_id, task_kind=subagent, parent_task_id, parentID, sessionID=null, location_directory, agent_id, dependencias, scope_escritura, output_path, criterion]
+- [row of child 1, copied VERBATIM from its ledger row: every field of the row, with `sessionID: null` until it is created]
+- [row of child 2, copied VERBATIM from its ledger row: every field of the row, with `sessionID: null` until it is created]
 You may receive the same `agent_id` in more than one row. Satisfy the minimum only with at least two subagent rows of your task having distinct non-null `sessionID`s and with results inspected and reported by you and integrated into your report; the orchestrator is the one who marks `verified` in the ledger.
 
 If a pre-authorized task or scope must change, stop the affected work and request an update through the confirmed channel; do not edit the ledger or create new rows/tasks. If no dynamic round-trip channel is confirmed, leave the request in this session's result so the orchestrator reads it through the result capability, and do not resume the changed work until you receive an updated prompt that matches the ledger.
