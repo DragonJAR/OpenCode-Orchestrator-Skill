@@ -24,6 +24,10 @@ not apply and the light path in SKILL.md is enough. Two things only apply here:
   subagents, not the orchestrator itself: if there was no `root_session_hint`,
   `init-run` created a `[00] Orchestrator` session that stays alive; delete it
   with `delete-session --session <SID> --yes` (the run prints its `sessionID`).
+- **Run the scripts from the PROJECT directory.** They resolve the project
+  from the current directory, so running them from the scripts' own directory
+  creates the sessions in the WRONG project (and the tabs gate blocks,
+  because the live TUI is elsewhere).
 
 ## Step 2: Preflight of real capabilities
 
