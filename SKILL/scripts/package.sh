@@ -8,18 +8,21 @@
 # expected-inventory comparison. To add or remove a package entry, edit PACKAGE_FILES only;
 # every downstream step is generated from it in one pass (DRY: the list is never duplicated).
 #
-# Dependencies: POSIX sh, zip, zipinfo, unzip, sort, cmp.
-# Usage: sh SKILL/scripts/package.sh   (run from the workspace root; uses cwd-relative SKILL/)
+# Dependencies: POSIX sh, python3 (standard library only), sort and the core
+# utilities. NOT zip/zipinfo/unzip/cmp: they are not part of Git for Windows,
+# and the archive is built and inspected with the python standard library, so
+# ONE implementation behaves the same on the three platforms.
+# Usage: sh SKILL/scripts/package.sh          (run from the workspace root; uses cwd-relative SKILL/)
+#        sh SKILL/scripts/package.sh --list   (print the closed list, one entry per line)
 # Exit codes: 0 = success, 1 = invalid source or inventory mismatch, 2 = usage/environment.
 set -eu
 
 PACKAGE_NAME="opencode-orchestrator-skill" # must match the frontmatter `name`
 SOURCE_ROOT="$(pwd -P)/SKILL"
-test -d "$SOURCE_ROOT" || { printf 'ERROR: SKILL/ not found in %s; run this from the workspace root.\n' "$SOURCE_ROOT" >&2; exit 2; }
 
 # --- Closed list (single source of truth; last entry = self-inclusion) --------
-# The closed list covers EVERY file that ships. It used to list only 2 of the
-# 22 eval fixtures, so the packaged smoke harness referenced files that were
+# The closed list covers EVERY file that ships. It used to list only two of the
+# eval fixtures, so the packaged smoke harness referenced files that were
 # not in the ZIP: every user of the package got a broken eval suite. The
 # guard below makes that drift impossible to reintroduce.
 PACKAGE_FILES='
@@ -63,6 +66,20 @@ scripts/validate_ledger_closed.sh
 scripts/watch_run.sh
 '
 
+# --list prints the closed list, one entry per line. The CI asks the recipe
+# for it instead of rebuilding the same set with another `find` expression:
+# the same set written twice is a list that drifts.
+case "${1:-}" in
+  --list)
+    printf '%s\n' "$PACKAGE_FILES" | awk 'NF{print}'
+    exit 0
+    ;;
+  '') ;;
+  *) printf 'ERROR: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+esac
+
+test -d "$SOURCE_ROOT" || { printf 'ERROR: SKILL/ not found in %s; run this from the workspace root.\n' "$SOURCE_ROOT" >&2; exit 2; }
+
 check_source_dir() {
   if [ -L "$1" ] || [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
     printf 'ERROR: invalid source (directory reachable, not a symlink): %s\n' "$1" >&2
@@ -80,11 +97,19 @@ for c in python3 sort; do
   command -v "$c" >/dev/null 2>&1 || { printf 'ERROR: required dependency not available: %s\n' "$c" >&2; exit 2; }
 done
 
+# What lives under SKILL/ and is NOT part of the skill. ONE definition, used
+# by the two guards below (the suite must not be published, and the tree must
+# not carry a file the closed list forgot):
+#   EXCLUDED_SUITE  the maintainer-internal regression suite (never published)
+#   EXCLUDED_NOISE  operating-system and bytecode noise (not content)
+EXCLUDED_SUITE='^scripts/evals/'
+EXCLUDED_NOISE='/__pycache__/|[.]pyc$|(^|/)[.]DS_Store$|(^|/)Thumbs[.]db$'
+
 # Guard: the regression suite is MAINTAINER-INTERNAL and must NOT ship. The
 # closed list used to carry only 2 of its fixtures, so the published package
 # referenced files it did not contain; excluding the suite entirely removes
 # the class of problem instead of tracking it.
-if printf '%s\n' "$PACKAGE_FILES" | grep -q '^scripts/evals/'; then
+if printf '%s\n' "$PACKAGE_FILES" | grep -q "$EXCLUDED_SUITE"; then
   printf 'ERROR: the closed list contains the internal regression suite; it must not be published\n' >&2
   exit 1
 fi
@@ -98,6 +123,26 @@ PACKAGE_ROOT="$PACKAGE_STAGE/$PACKAGE_NAME"
 mkdir -p "$PACKAGE_ROOT/references" "$PACKAGE_ROOT/scripts"
 # Guarantee cleanup on any exit (failure sites below would otherwise leave the staged tree on /var).
 trap 'rm -rf "$PACKAGE_WORK"' EXIT INT TERM
+
+# Completeness: the closed list must cover EVERY file the skill has. The
+# inventory comparison further down is DERIVED from the closed list, so it
+# proves that the ZIP matches the list and NOT that the list is complete: a
+# new script that nobody added to the list would ship silently, and the prose
+# that tells the operator to run it would point at a file that is not in the
+# ZIP. That is the class this project already paid for once (the closed list
+# drifted from the tree); this check is what makes it impossible to pay for it
+# twice.
+( cd "$SOURCE_ROOT" && find . -type f ) | sed 's#^\./##' | LC_ALL=C sort > "$PACKAGE_WORK/tree.txt"
+printf '%s\n' "$PACKAGE_FILES" | awk 'NF{print}' | LC_ALL=C sort > "$PACKAGE_WORK/list.txt"
+comm -23 "$PACKAGE_WORK/tree.txt" "$PACKAGE_WORK/list.txt" \
+  | grep -vE "$EXCLUDED_SUITE|$EXCLUDED_NOISE" > "$PACKAGE_WORK/unpublished.txt" || true
+if [ -s "$PACKAGE_WORK/unpublished.txt" ]; then
+  printf 'ERROR: %s file(s) exist under SKILL/ and are not in the closed list:\n' \
+    "$(wc -l < "$PACKAGE_WORK/unpublished.txt" | tr -d ' ')" >&2
+  sed 's#^#  - #' "$PACKAGE_WORK/unpublished.txt" >&2
+  printf 'Add them to PACKAGE_FILES, or exclude them deliberately.\n' >&2
+  exit 1
+fi
 
 EXPECTED_ENTRIES="$PACKAGE_WORK/expected-entries.txt"
 # Directory entries the recursive zip stores, DERIVED from the closed list itself

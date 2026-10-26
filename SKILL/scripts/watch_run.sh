@@ -1,7 +1,12 @@
 #!/bin/sh
 # watch_run.sh - bounded watcher for an OpenCode orchestration run.
-# POSIX sh + awk + curl. No python, no heredocs. Consumes preflight output via
-# env (OPENCODE_URL, optional OPENCODE_PW); performs no discovery itself.
+# POSIX sh + awk. No python, no heredocs. Talks to the CLI's ACTIVE service,
+# the same one the run sends the prompts through (orchestrate.sh uses
+# `opencode api` for the read, the send and the delete), so the watcher always
+# watches the instance that holds the session. It performs no discovery of its
+# own and needs NO environment: it used to REQUIRE OPENCODE_URL (and
+# OPENCODE_PW) and then never read them, which was a contract that lied about
+# what the script did.
 # Usage: watch_run.sh -s SESSION_ID -a ARTIFACT[,ARTIFACT2...] [-d DEADLINE_SEC] [-i INTERVAL_SEC]
 # Exit codes: 0 = artifacts present and session idle; 3 = deadline; 2 = usage/env.
 # Prints one line per state transition: TS idle=<y/n> outcome=<x> artifacts=<n/m> [awaiting-approval]
@@ -24,8 +29,8 @@ while getopts ":s:a:d:i:" opt; do
     *) printf '%s\n' "usage: $0 -s SESSION_ID -a ARTIFACT[,ARTIFACT2...] [-d sec] [-i sec]" >&2; exit 2 ;;
   esac
 done
-[ -n "$SESSION" ] && [ -n "$ARTIFACTS" ] && [ -n "${OPENCODE_URL:-}" ] || {
-  printf '%s\n' "ERROR: -s and -a required; OPENCODE_URL must come from preflight" >&2; exit 2; }
+[ -n "$SESSION" ] && [ -n "$ARTIFACTS" ] || {
+  printf '%s\n' "ERROR: -s and -a are required" >&2; exit 2; }
 # D1: -d/-i are compared with `[ ... -ge ... ]` and passed to `sleep`. A
 # non-integer ("120s") made the comparison error out and the loop keep going,
 # so the deadline was never enforced. Same guard as orchestrate.sh's
@@ -37,18 +42,6 @@ for _n in "$DEADLINE" "$INTERVAL"; do
   [ "$_n" -ge 1 ] 2>/dev/null || { printf 'watch_run: -d/-i must be >= 1, got: %s\n' "$_n" >&2; exit 2; }
 done
 command -v awk >/dev/null 2>&1 || { printf '%s\n' "ERROR: awk not available" >&2; exit 2; }
-# S1 (class): one existence probe BEFORE the loop. The poll below retries
-# every API error until TIMEOUT, so a typo'd/never-existing session id used
-# to block silently for the whole deadline. Same probe as sub_wait_idle's
-# (GET /api/session/<id>, answer must carry a ses_ id); exit 2 is this
-# script's documented usage/environment code (see SKILL.md watch row), NOT a
-# new code.
-_wprobe=$(opencode api GET "/api/session/$SESSION" 2>/dev/null || printf '')
-case "$_wprobe" in *'"id":"ses_'*) : ;;
-  *) printf '%s\n' "watch_run: session-not-found session=$SESSION (fail-closed; not polling to the deadline)" >&2; exit 2 ;;
-esac
-START=$(date +%s)
-prev=""
 # ONE derived-offset extractor, the SHARED one (scripts/_json.awk, the same
 # library json_get_field uses): the value starts at the key prefix and is
 # read to its natural end. The offsets are DERIVED, never hardcoded: a typo
@@ -59,7 +52,7 @@ prev=""
 # diverged, and this one stripped a number to its digits. It is now the same
 # library the rest of the skill uses, read from THIS directory (this script
 # is always invoked as "$SELF_DIR/watch_run.sh" and ships beside it).
-# It still sources no shell library: it stays POSIX sh + awk + curl, with no
+# It still sources no shell library: it stays POSIX sh + awk, with no
 # python, and it fails closed if the library is missing.
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 _JSON_LIB=""
@@ -73,25 +66,44 @@ _wfield() {  # KEY JSON -> the value (string, number or raw array)
   printf '%s' "$2" | awk -v key="$1" "$_JSON_LIB"'
     { json_field($0, key, ""); print JSON_VALUE }'
 }
+_api() {  # PATH -> the body on stdout (empty when the request failed)
+  opencode api GET "$1" 2>/dev/null || printf ''
+}
+# S1 (class): one existence probe BEFORE the loop. The poll below retries
+# every API error until TIMEOUT, so a typo'd/never-existing session id used
+# to block silently for the whole deadline. Same probe as sub_wait_idle's
+# (GET /api/session/<id>, answer must carry a ses_ id); exit 2 is this
+# script's documented usage/environment code (see SKILL.md watch row), NOT a
+# new code. The id is read with the SHARED getter, so a pretty-printed answer
+# ("id": "ses_...") is not read as "not found".
+_wprobe=$(_api "/api/session/$SESSION")
+case "$(_wfield id "$_wprobe")" in
+  ses_*) : ;;
+  *) printf '%s\n' "watch_run: session-not-found session=$SESSION (fail-closed; not polling to the deadline)" >&2; exit 2 ;;
+esac
+START=$(date +%s)
+prev=""
 printf '%s\n' "watch_run: session=$SESSION deadline=${DEADLINE}s interval=${INTERVAL}s artifacts=$ARTIFACTS"
 while : ; do
   now=$(date +%s); [ $((now - START)) -ge "$DEADLINE" ] && { printf '%s\n' "watch_run: TIMEOUT"; exit 3; }
-  resp=$(opencode api GET "/api/session/$SESSION" 2>/dev/null || printf '')
+  resp=$(_api "/api/session/$SESSION")
   idle=$(_wfield idle "$resp")
-  outcome=$(printf '%s' "$resp" | awk -F'"outcome":"' 'NF>1{split($2,a,"\""); print a[1]; exit}')
+  # The outcome is read with the SHARED getter, like idle and data below: the
+  # private copy needed the exact bytes "outcome":" and read a pretty-printed
+  # answer as "none", so a failed worker was reported with no outcome.
+  outcome=$(_wfield outcome "$resp")
   nart=0; oldIFS=$IFS; IFS=,
   for f in $ARTIFACTS; do [ -f "$f" ] && nart=$((nart + 1)); done
   IFS=$oldIFS
   total=$(printf '%s' "$ARTIFACTS" | awk -F, '{print NF}')
   warn=""
-  # ${OPENCODE_PW:-}: sub_watch only exports it when the cache holds a password;
-  # the bare $OPENCODE_PW here aborted the whole watcher with "unbound variable"
-  # under set -u on no-auth instances (line 24 already used the :- form).
-  if [ -n "${OPENCODE_PW:-}" ]; then
-    _perm=$(opencode api GET "/api/session/$SESSION/permission" 2>/dev/null | tr -d ' \n')
-    plist=$(_wfield data "$_perm")
-    [ -n "$plist" ] && warn="awaiting-approval"
-  fi
+  # The pending-permission check is NOT gated on a password: the CLI carries
+  # the credentials, and a session waiting for an approval is a state of the
+  # run, not of the instance's auth mode. An instance that does not publish
+  # the route answers empty, which is the same as "no pending permission".
+  _perm=$(_api "/api/session/$SESSION/permission" | tr -d ' \n')
+  plist=$(_wfield data "$_perm")
+  [ -n "$plist" ] && warn="awaiting-approval"
   cur="idle=${idle:-no} outcome=${outcome:-none} artifacts=$nart/$total $warn"
   if [ "$cur" != "$prev" ]; then
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cur"

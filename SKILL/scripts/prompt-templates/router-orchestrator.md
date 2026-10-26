@@ -96,5 +96,5 @@ sub-agents).
 You never re-implement what `orchestrate.sh` already does. Use its subcommands:
 `preflight`, `pool`, `sessions`, `tabs`, `attach-tabs`, `create-worker`, `send-prompt`,
 `wait-idle`, `watch`, `init-run`, `ensure-root`, `dispatch` (this one), `delete-session`,
-`verify-daughters`, `self-check`, `session-id`. The skill is the implementation; you are
+`clean`, `verify-daughters`, `self-check`, `session-id`. The skill is the implementation; you are
 the dispatcher and the monitor.

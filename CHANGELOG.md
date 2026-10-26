@@ -6,6 +6,129 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-24
+
+The gate that could not fail. Every defect class this project has ever paid
+for was checked against the tree as it is today, in every surface that
+publishes: the code that ships, the gate that guards it, the prose that
+describes it and the packaging that distributes it. Five of the classes were
+still OPEN, and the gate was checking things it could not fail on.
+
+### Fixed — the code that ships
+- **A failed dispatch was reported as a successful one.** `dispatch` sent
+  the prompt with `sub_send_prompt ... | sed`, and a pipeline reports the
+  status of its LAST command: a rejected prompt (exit 1), a session with no
+  resolved model (exit 2) and a timeout (exit 3) were all printed as a
+  normal dispatch and the run went on as if every worker had the prompt. The
+  output is captured first and the status read from the capture; each
+  failure is counted, reported as a `FAILED:` line, and the command ends
+  with a non-zero exit.
+- **The service password could be sent to another host.** The endpoint guard
+  required a port, which kept `http://127.0.0.1.attacker.tld/` out, but it
+  accepted `http://127.0.0.1:80@evil.tld/`: curl reads `127.0.0.1:80` as
+  user:password and connects to `evil.tld`, with the service password in the
+  request. The authority is now checked for userinfo before anything is
+  sent.
+- **A preflight that resolved no project exited 0.** The location query's
+  status was lost inside a pipe, so a failed request read as an empty
+  answer: the preflight printed `canonical_directory=` and
+  `projectID=none` and reported success, and every later command then
+  refused with "state not initialized", with no error at the point of the
+  cause. One helper now talks to the server, the status is checked before
+  the body is normalized, and an empty canonical directory or project id
+  fails closed.
+- **The watcher demanded an endpoint it never used.** `watch_run.sh`
+  required `OPENCODE_URL` (and `OPENCODE_PW`) and then polled the CLI's
+  default service, so the contract lied about what the script did. It now
+  talks to the CLI's active service — the same one the run sends the
+  prompts through — and needs no environment at all.
+- **`clean` refused to sweep on Git Bash.** The check "is this session in
+  this project" was a `grep` whose PATTERN was the path, and a path is not
+  a regex: with the backslashes of a Windows path the pattern could never
+  match. It now uses the shared getter and the same escape decode the
+  creation path uses, so there is ONE implementation of that question.
+- **Two private copies of the JSON formula.** `preflight.sh` and
+  `watch_run.sh` each carried their own extraction next to the shared
+  library: both needed the exact bytes `"key":"` and read a
+  pretty-printed answer as garbage. Both use the shared getter now.
+
+### Fixed — found by validating the skill live
+- **The dispatch sent the task to the orchestrator.** The [00] slot is the
+  root/orchestrator (the naming convention reserves it) and the idle list
+  included it, so a `dispatch --count N` spent its first target on the
+  orchestrator: the prompt came back to the agent that was supposed to
+  delegate it, and the run reported a fan-out it had not made. The
+  orchestrator is now never a target — the idle list skips its slot,
+  `--target 00` is refused, and `send-prompt` to the orchestrator is refused.
+  The one message it must receive, the router instruction that `init-run`
+  installs on the [00], is declared explicitly.
+- **`clean` could not find the orchestrator when the root was the
+  operator's own session.** The auto-detection only looked for a `[00]`
+  session, and a run whose root is the operator's session has none: the
+  cleanup had to be given `--orchestrator` by hand. The run's own record of
+  its root (the cache) is now the fallback, and the project-membership check
+  validates it like any other candidate.
+
+### Fixed — the gate
+- **The CI linted in bash mode.** `shellcheck --severity=error` checks the
+  default dialect, so a bash-only construct in a `#!/bin/sh` script passed
+  every push and broke only on a dash runner. The POSIX findings are
+  warning-level, so there is now a step that asks for them explicitly and
+  fails on the `SC3xxx` family.
+- **The CRLF proxy could not fail.** The step asserted that a value read
+  from python carries no CR, and the `py` helper strips the CR
+  unconditionally: it passed with contamination and without it. The proxy
+  must now be ARMED (the raw python output has to carry the CR) before the
+  assertion is worth anything.
+- **The packaging compared the closed list with itself.** The inventory
+  check is derived from the list, so it proved that the ZIP matches the
+  list and NOT that the list is complete: a new script nobody added to it
+  would ship silently. The recipe now diffs the tree against the list and
+  fails closed, and `--list` publishes the list so the CI lints exactly
+  what ships instead of rebuilding the set with another `find`.
+- **The awk libraries were never parsed.** They hold the ONE JSON
+  extraction formula and the ONE validator helper set, and a syntax error
+  in them breaks every session operation.
+- **The version could drift between the three public sources.** The check
+  that catches it was in the maintainer-internal guard, which does not run
+  on a push; the public gate carries it now.
+- **A dead-variable check hid shellcheck's own failure**, and a
+  command-table row whose command did not parse was skipped instead of
+  reported: a skipped row is an unchecked promise.
+
+### Fixed — the prose
+- The READMEs described **fifteen** hard rules (there are sixteen) and
+  claimed the scripts are read-only by default, which they are not:
+  `send-prompt` and `dispatch` change the server and a prompt send is not
+  idempotent.
+- The package tree in both READMEs omitted `scripts/_json.awk` and
+  `scripts/prompt-templates/`, and two validators were listed as
+  subcommands of `orchestrate.sh` (they are separate scripts).
+- `SKILL.md` listed `tui_cwd_any` among the keys `preflight` emits; it does
+  not, and the router prompt listed sixteen of the seventeen subcommands
+  (the missing one, `clean`, is the one that closes the readiness check).
+- The link to the `attach-tabs` exit-code map pointed at an anchor that
+  did not exist, in both directions.
+
+### Changed
+- The defect-class guard has two more rules — **R23**, a function that can
+  fail called on the left of a pipeline, and **R24**, an environment
+  variable that is required and never read — and it now checks its own
+  inventory: two rules were enforced but not listed, so `--list` did not
+  answer the question it exists to answer.
+
+### Verification
+- Regression suite 37/37 (one more: the orchestrator is never a target); the
+  class sweep 0 hits with all 24 rules proved with their own defect plus the
+  inventory check; the structural validator 7/7; the package builds.
+- The skill was also validated LIVE, in a tmux session with opencode and the
+  skill loaded: an agent read SKILL.md, ran the readiness path end to end
+  (preflight -> init-run -> dispatch -> wait-idle -> clean) and verified in
+  four ways that the prompts reached the WORKERS and not its own session.
+- Every new gate was proved by breaking it: a bashism, a broken awk
+  library, a wrong badge, an undeclared file and an unarmed CRLF proxy each
+  fail the step that is supposed to catch them.
+
 ## [1.6.0] - 2026-10-24
 
 The readiness check. A session that asked the skill to "launch 20 sessions and
@@ -790,7 +913,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.6...v1.6.0
 [1.5.6]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...v1.5.6
 [1.5.5]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.4...v1.5.5

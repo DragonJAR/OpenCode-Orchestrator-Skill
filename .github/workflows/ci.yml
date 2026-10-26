@@ -1,5 +1,4 @@
 name: ci
-
 on:
   push:
     branches: [main]
@@ -30,28 +29,80 @@ jobs:
             macOS)   brew install shellcheck ;;
             Windows) choco install shellcheck --no-progress -y ;;
           esac
+      - name: Collect the shipped files (one list for every check below)
+        run: |
+          set -e
+          # ONE list, from the packaging recipe: the closed list IS the single
+          # source of truth for what ships. The checks below used to rebuild
+          # the same set with three different expressions (SKILL/scripts,
+          # SKILL/scripts SKILL/scripts/os, rglob("*.sh")): the same set
+          # written three ways is a list that drifts.
+          sh SKILL/scripts/package.sh --list > "$RUNNER_TEMP/shipped.txt"
+          grep '\.sh$'  "$RUNNER_TEMP/shipped.txt" | sed 's#^#SKILL/#' | tr '\n' ' ' > "$RUNNER_TEMP/sh_files.txt"
+          grep '\.awk$' "$RUNNER_TEMP/shipped.txt" | sed 's#^#SKILL/#' | tr '\n' ' ' > "$RUNNER_TEMP/awk_files.txt"
+          echo "SH_FILES=$(cat "$RUNNER_TEMP/sh_files.txt")" >> "$GITHUB_ENV"
+          echo "AWK_FILES=$(cat "$RUNNER_TEMP/awk_files.txt")" >> "$GITHUB_ENV"
+          echo "shipped files: $(wc -l < "$RUNNER_TEMP/shipped.txt")"
       - name: Shellcheck (errors only, package-wide)
         run: |
           set -e
-          files=$(find SKILL/scripts SKILL/scripts/os -type f -name '*.sh' | sort)
-          echo "Running shellcheck on: $files"
-          for f in $files; do
+          echo "Running shellcheck on: $SH_FILES"
+          for f in $SH_FILES; do
             # Severity=error is the gating rule. Info/warning findings are
             # not gating (the package is expected to run clean at error
             # level; see CHANGELOG.md for the defect classes fixed so far).
             shellcheck --severity=error "$f" || { echo "shellcheck error in $f"; exit 1; }
           done
           echo "shellcheck (errors only) PASS"
+      - name: POSIX compatibility (no bash-only construct in a #!/bin/sh script)
+        run: |
+          set -e
+          # The error-level lint above runs shellcheck in its DEFAULT dialect,
+          # which is bash: a bash-only construct in a #!/bin/sh script passes
+          # every push and breaks only on a dash runner (Linux, WSL, Alpine).
+          # The POSIX findings are WARNING level in shellcheck, so this step
+          # asks for them explicitly and fails on the SC3xxx family only (the
+          # rest of the warning level is not about POSIX).
+          failed=0
+          for f in $SH_FILES; do
+            out=$(shellcheck --shell=sh --severity=warning "$f" 2>&1 || true)
+            hits=$(printf '%s\n' "$out" | grep -E 'SC3[0-9]{3}' || true)
+            if [ -n "$hits" ]; then
+              printf '%s\n' "$hits"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "ERROR: a bash-only construct in a POSIX sh script (SC3xxx family)"
+            exit 1
+          fi
+          echo "POSIX compatibility PASS"
       - name: sh -n smoke
         run: |
           set -e
-          for f in $(find SKILL/scripts SKILL/scripts/os -type f -name '*.sh' | sort); do
+          for f in $SH_FILES; do
             sh -n "$f" || { echo "syntax error in $f"; exit 1; }
           done
           echo "sh -n PASS"
+      - name: The awk libraries parse
+        run: |
+          set -e
+          # The awk libraries hold the ONE JSON extraction formula and the ONE
+          # validator helper set. A syntax error in them breaks every session
+          # operation, and nothing in the gate parsed them.
+          for f in $AWK_FILES; do
+            if ! awk -f "$f" </dev/null; then
+              echo "ERROR: the awk library does not parse: $f"
+              exit 1
+            fi
+          done
+          echo "awk libraries PASS"
       - name: Build the distributable package
         run: |
           set -e
+          # The recipe also checks that the closed list covers EVERY file
+          # under SKILL/: the inventory comparison is derived from the list
+          # itself, so on its own it cannot see a file that is not in it.
           sh SKILL/scripts/package.sh
           test -f dist/opencode-orchestrator-skill.zip
           echo "package build PASS"
@@ -80,10 +131,19 @@ jobs:
           SELF_DIR="$(cd SKILL/scripts && pwd)"; export SELF_DIR
           . SKILL/scripts/os/_paths.sh
           . SKILL/scripts/os/_common.sh
-          # The CR contamination lives in the path that READS python's output:
-          # the `py` helper, which is where the defect actually was. The
-          # extraction below is pure awk and could never carry a CR, so
-          # checking it here proved nothing; `py` is the thing under test.
+          # The proxy must be ARMED: the raw python output has to carry the CR.
+          # Without this assertion the step could not fail at all -- `py`
+          # strips the CR itself, so the comparison below passed with AND
+          # without contamination (the guard said the truth and stopped
+          # nothing). Armed here, the failure it names is real.
+          raw=$(python3 -c 'print("ses_x")')
+          clean=$(printf '%s' "$raw" | tr -d '\r')
+          if [ "$clean" = "$raw" ]; then
+            echo "ERROR: the CRLF proxy is not armed: the raw python output carries no CR"
+            exit 1
+          fi
+          # And the value the shell READS must not carry it: that is what the
+          # `py` helper is for.
           v=$(py -c 'print("ses_x")')
           [ "$v" = "ses_x" ] || { echo "CR contamination in a value read from python: [$v]"; exit 1; }
           n=$(py -c 'print(7)')
@@ -101,10 +161,20 @@ jobs:
           # step is what keeps it from coming back. Only SC2034 is checked
           # here (it is a stable check, so a newer shellcheck cannot turn the
           # build red for an unrelated warning).
+          # shellcheck's exit status is 1 when it FINDS something and >1 when
+          # it could not analyse the file; the old `shellcheck | grep -q` threw
+          # that status away, so a shellcheck that could not run left the step
+          # green. Here the status is read.
           failed=0
-          for f in $(find SKILL/scripts -type f -name '*.sh' | sort); do
-            if shellcheck --severity=warning "$f" 2>&1 | grep -q 'SC2034'; then
-              shellcheck --severity=warning "$f" 2>&1 | grep -B 3 'SC2034' || true
+          for f in $SH_FILES; do
+            out=$(shellcheck --severity=warning "$f" 2>&1); rc=$?
+            if [ "$rc" -gt 1 ]; then
+              printf '%s\n' "$out"
+              echo "ERROR: shellcheck could not analyse $f"
+              failed=1
+            fi
+            if printf '%s\n' "$out" | grep -q 'SC2034'; then
+              printf '%s\n' "$out" | grep -B 3 'SC2034' || true
               failed=1
             fi
           done
@@ -118,7 +188,9 @@ jobs:
           set -e
           # The command table in SKILL.md is a PROMISE about the command
           # surface. A subcommand or a flag written there and absent from the
-          # code is a promise the code does not keep.
+          # code is a promise the code does not keep. A row whose command does
+          # not parse is reported too: it used to be SKIPPED, and a skipped row
+          # is an unchecked promise.
           python3 - <<'PY'
           import re, pathlib, sys
           root = pathlib.Path("SKILL")
@@ -128,9 +200,14 @@ jobs:
           for line in skill.splitlines():
               if not line.startswith("|") or "orchestrate.sh" not in line:
                   continue
-              for span in re.findall(r"`([^`]+)`", line):
-                  m = re.search(r"orchestrate\.sh ([a-z-]+)([^`]*)", span)
+              spans = [s for s in re.findall(r"`([^`]+)`", line) if "orchestrate.sh" in s]
+              if not spans:
+                  bad.append("a table row mentions orchestrate.sh but writes no command")
+                  continue
+              for span in spans:
+                  m = re.search(r"orchestrate\.sh\s+([a-z-]+)([^`]*)", span)
                   if not m:
+                      bad.append(f"a table row writes a command that does not parse: {span}")
                       continue
                   cmd, flags = m.group(1), m.group(2)
                   if (cmd, flags) in seen:
@@ -145,6 +222,31 @@ jobs:
           for b in bad:
               print("  " + b)
           sys.exit(1 if bad else 0)
+          PY
+      - name: The version is the same in the three public sources
+        run: |
+          set -e
+          # The version is published in three places (the skill's frontmatter
+          # and the two README badges). They drifted apart once, and the
+          # class guard that noticed it is maintainer-internal, so the public
+          # gate carries the check.
+          python3 - <<'PY'
+          import re, pathlib, sys
+          skill = pathlib.Path("SKILL/SKILL.md").read_text()
+          en = pathlib.Path("README.md").read_text()
+          es = pathlib.Path("README.es.md").read_text()
+          v1 = re.search(r'skill_version:\s*"([0-9.]+)"', skill)
+          v2 = re.search(r"release-([0-9.]+)", en)
+          v3 = re.search(r"versi.n-([0-9.]+)", es)
+          vals = {"SKILL/SKILL.md": v1.group(1) if v1 else None,
+                  "README.md": v2.group(1) if v2 else None,
+                  "README.es.md": v3.group(1) if v3 else None}
+          if len(set(vals.values())) != 1:
+              print("ERROR: the public sources disagree about the version:")
+              for k, v in vals.items():
+                  print(f"  {k} = {v}")
+              sys.exit(1)
+          print(f"version coherent: {vals['SKILL/SKILL.md']}")
           PY
       # Note: the defect-class guard (one rule per class in this project's
       # history) is MAINTAINER-INTERNAL, like the regression suite: it lives

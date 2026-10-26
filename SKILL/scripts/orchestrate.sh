@@ -221,8 +221,9 @@ sub_watch() {
   [ -n "$SID" ] && [ -n "$ARTIFACT" ] || { printf '%s\n' '--session and --artifact required' >&2; exit 2; }
   [ -z "$DEADLINE" ] || assert_uint --deadline "$DEADLINE"
   [ -z "$INTERVAL" ] || assert_uint --interval "$INTERVAL"
-  if cache_has endpoint; then OPENCODE_URL=$(cache_get endpoint); export OPENCODE_URL; fi
-  if cache_has auth_password; then OPENCODE_PW=$(cache_get auth_password); export OPENCODE_PW; fi
+  # The watcher talks to the CLI's active service (the same one the run
+  # sends the prompts through), so it needs no endpoint and no password:
+  # they used to be exported here for a contract the watcher never read.
   # Quoted positional args: they support paths with spaces (no arrays, pure POSIX).
   set -- "$SELF_DIR/watch_run.sh" -s "$SID" -a "$ARTIFACT"
   [ -n "$DEADLINE" ] && set -- "$@" -d "$DEADLINE"
@@ -314,6 +315,16 @@ sub_send_prompt() {
   parse_kv "$@"
   [ -n "$SID" ] && [ -n "$PROMPT_FILE" ] || { printf '%s\n' '--session and --prompt-file required' >&2; exit 2; }
   require_state
+  # The orchestrator is NEVER the target of a TASK prompt (the prose says it,
+  # and now the code does too): the prompt would come back to the agent that
+  # is supposed to delegate, and the task would be done by the orchestrator
+  # instead of by a worker.
+  # The ONE exception is the router instruction: init-run installs it on the
+  # [00] ON PURPOSE (it is the message that makes the orchestrator delegate),
+  # and the install says so with ROUTER_INSTALL=1.
+  if [ "${ROUTER_INSTALL:-0}" != "1" ] && is_orchestrator_sid "$SID"; then
+    die "send-prompt: the target is the orchestrator; it is never a task target (use dispatch to reach a worker)"
+  fi
   [ -f "$PROMPT_FILE" ] || die "prompt file does not exist: $PROMPT_FILE"
   # Guard against the silent failure: a session created without a resolved
   # model accepts the prompt, infers nothing (0 tokens) and ends in
@@ -486,8 +497,13 @@ sub_init_run() {
             # task instead of implementing it. `|| true` swallowed the failure and
             # the run continued with an orchestrator that never learned the rule,
             # so the failure is now fatal (fail-closed, same as ensure_root above).
+            # This is the ONE message the orchestrator must receive, so the
+            # install declares it (the transport refuses the orchestrator as
+            # a task target).
+            ROUTER_INSTALL=1
             sub_send_prompt --session "$RID" --prompt-file "$ROUTER_FILE" \
               || die "could not install the router instruction on the orchestrator ($RID); aborting the run"
+            ROUTER_INSTALL=0
           else
             printf 'router: skipped (no router prompt at %s; use --router-prompt PATH or copy SKILL/scripts/prompt-templates/router-orchestrator.md)\n' "$ROUTER_FILE"
           fi
@@ -839,14 +855,31 @@ if cands: print(cands[0]["id"])
 ') \
     || die "clean: could not parse the session list to find the [00] orchestrator (the error above says why)"
   fi
+  # The [00] of the naming convention is the orchestrator when the run
+  # created one. It is not always: the root can be the operator's own
+  # session (reused as the root), and then no [00]-titled session exists.
+  # The run's own record of its root (the cache) is the fallback, and the
+  # project-membership check below validates it like any other candidate.
+  if [ -z "$ORCH_SID" ]; then
+    ORCH_SID=$(orchestrator_sid 2>/dev/null) || ORCH_SID=""
+  fi
   [ -n "$ORCH_SID" ] || die 'clean: no [00] orchestrator in this project; pass --orchestrator SID'
   case "$ORCH_SID" in ses_*) : ;; *) die 'clean: --orchestrator must have the ses_ prefix' ;; esac
  # (concurrency-probe HIGH): validate ORCH_SID belongs to this project
   # BEFORE any destructive enumeration. A bogus --orchestrator used to
   # pass through `seen = {orch}` (which excluded only the bogus SID) and
   # then sweep the real [00] + workers. Fail-closed with a clear message.
-  if ! opencode api GET "/api/session/$ORCH_SID" 2>/dev/null | grep -q "\"directory\":\"$PROJ_DIR\""; then
- die "clean: --orchestrator $ORCH_SID is not in this project (location != $PROJ_DIR); refusing to sweep (data-loss class)"
+  if ! _orch_info=$(opencode api GET "/api/session/$ORCH_SID" 2>/dev/null); then
+  die "clean: could not read the session $ORCH_SID (transport); refusing to sweep (data-loss class)"
+  fi
+  # ONE implementation of "is this session in this project": the shared getter
+  # plus the same escape decode the creation path uses (os/_common.sh). The test
+  # used to be a grep whose PATTERN was the path itself, and a path is not a
+  # regex: on Git Bash (backslashes) the pattern could never match, so `clean`
+  # always refused; any metacharacter in the path broke it the other way.
+  _orch_loc=$(printf '%s' "$_orch_info" | json_get_field directory | sed 's/\\\\/\\/g')
+  if [ "$_orch_loc" != "$PROJ_DIR" ]; then
+  die "clean: --orchestrator $ORCH_SID is not in this project (location != $PROJ_DIR); refusing to sweep (data-loss class)"
   fi
 
   # Identify orchestrator-opened sessions in this project
@@ -1067,7 +1100,13 @@ sub_dispatch() {
   # genuinely `running` session (out>0 or updated>created, no time.idle) is
   # still refused (fail-closed collision guard, semantics unchanged).
   POOL=$(pool_list) || die "dispatch: could not query worker pool"
-  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' '$7 == "" && ($3 == "idle" || $3 == "empty") { print $1, $5 }')
+  # The orchestrator is NEVER a target: its slot is the [00] of the naming
+  # convention, and a prompt sent to it comes back to the agent that is
+  # supposed to delegate (the task would be done by the orchestrator). The
+  # filter is by ORDINAL because the pool is the live truth; the run's own
+  # record of its root is checked at the point of the send.
+  IDLE=$(printf '%s\n' "$POOL" | awk -F'\t' -v orch="$ORCHESTRATOR_ORDINAL" \
+    '$1+0 != orch+0 && $7 == "" && ($3 == "idle" || $3 == "empty") { print $1, $5 }')
   N_IDLE=$(printf '%s\n' "$IDLE" | grep -c .)
  #: --target is resolved BEFORE the idle-count gate. With the gate first,
   # a --target naming a busy (or nonexistent) worker died with "no idle worker
@@ -1094,6 +1133,11 @@ sub_dispatch() {
     if [ -n "$T_SUB" ]; then
       [ "$T_SUB" -ge 1 ] 2>/dev/null || die "dispatch: --target sub-agent index must be >= 1"
     fi
+    # The orchestrator's slot is refused here too: --target bypasses the
+    # idle list, and the orchestrator is never a target.
+    if [ "$T_ORD" -eq "$ORCHESTRATOR_ORDINAL" ] 2>/dev/null; then
+      die "dispatch: --target $WORKER is the orchestrator; it is never a dispatch target (dispatch to a worker)"
+    fi
     WST=$(printf '%s\n' "$POOL" | awk -F'\t' -v o="$T_ORD" -v sbi="$T_SUB" '$1 == (o+0) && ($7+0) == (sbi+0) { print $3; exit }')
     [ -n "$WST" ] || die "dispatch: no worker with ordinal $WORKER in this project (run 'pool' to list the deployed workers)"
     [ "$WST" = idle ] || [ "$WST" = empty ] || die "dispatch: worker $WORKER is $WST (only idle or empty workers can receive new prompts)"
@@ -1112,7 +1156,7 @@ sub_dispatch() {
     # only holds the workers (column 7 empty).
     TARGET=$(printf '%s\n' "$POOL" | awk -F'\t' -v o="$T_ORD" -v sbi="$T_SUB" '$1 == (o+0) && ($7+0) == (sbi+0) { print $1, $5; exit }')
   elif [ "$N_IDLE" -eq 0 ]; then
-    die "dispatch: no idle worker in the pool; free one with wait-idle or pass --target NN"
+    die "dispatch: no idle worker in the pool (the [00] orchestrator is never a target); free one with wait-idle or pass --target NN"
   elif [ -n "$COUNT" ]; then
     N="$COUNT"
     [ "$N" -ge 1 ] || die "--count must be >= 1"
@@ -1137,6 +1181,7 @@ sub_dispatch() {
   printf 'dispatch: prompt=%s (words=%s bullets=%s) -> %d worker(s)\n' \
     "$PROMPT_FILE" "$WORDS" "$BULLETS" "$(printf '%s\n' "$TARGET" | grep -c .)"
 
+  _failed=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     set -- $line
@@ -1146,14 +1191,42 @@ sub_dispatch() {
     # session. Re-validate the sessionID prefix before sending.
     case "$SID" in ses_*) ;; *) die "dispatch: parsed SID '$SID' lacks ses_ prefix (worker title poisoning?)" ;; esac
     printf '  -> [%02d] %s sending prompt...\n' "$ORD" "$SID"
-    sub_send_prompt --session "$SID" --prompt-file "$PROMPT_FILE" 2>&1 | sed 's/^/    /'
+    # A failure must be a FAILURE: `func | sed` gives the pipeline the status
+    # of sed, so a failed POST (exit 1), a session with no model (exit 2) or a
+    # timeout (exit 3) was reported as a successful dispatch and the run went
+    # on as if every worker had the prompt. The output is captured first and
+    # the status read from the capture: the message is still shown, indented,
+    # AND the failure is still counted.
+    if _out=$(sub_send_prompt --session "$SID" --prompt-file "$PROMPT_FILE" 2>&1); then
+      _rc=0
+    else
+      _rc=$?
+      _failed=$((_failed + 1))
+    fi
+    if [ -n "$_out" ]; then printf '%s\n' "$_out" | sed 's/^/    /'; fi
+    if [ "$_rc" -ne 0 ]; then
+      printf '    FAILED: the prompt was not delivered to [%02d] %s (exit %s)\n' "$ORD" "$SID" "$_rc"
+    fi
     if [ "$WAIT" -eq 1 ]; then
       printf '    waiting (deadline=%ds interval=%ds)...\n' "$DEADLINE" "$INTERVAL"
-      sub_wait_idle --session "$SID" --deadline "$DEADLINE" -i "$INTERVAL" | sed 's/^/    /'
+      if _out=$(sub_wait_idle --session "$SID" --deadline "$DEADLINE" -i "$INTERVAL" 2>&1); then
+        _rc=0
+      else
+        _rc=$?
+        _failed=$((_failed + 1))
+      fi
+      if [ -n "$_out" ]; then printf '%s\n' "$_out" | sed 's/^/    /'; fi
+      if [ "$_rc" -ne 0 ]; then
+        printf '    FAILED: the worker did not settle (exit %s)\n' "$_rc"
+      fi
     fi
   done <<EOF
 $TARGET
 EOF
+  if [ "$_failed" -gt 0 ]; then
+    printf 'dispatch: %s operation(s) failed (see the FAILED lines above)\n' "$_failed"
+    exit 1
+  fi
 }
 
 # session-id COMPACT_REF -> prints the raw sessionID (ses_XXX) for a project

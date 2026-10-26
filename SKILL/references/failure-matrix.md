@@ -39,7 +39,7 @@ OpenCode's V2 HTTP API is declared experimental, including its session routes. T
 4. After a worker interruption, reconcile every subagent and its approvals. Do not release overlapping scopes while any execution is still active or unknown.
 5. Retry only after confirming the absence of prior work and effects, preserving authorization and scope, and using arguments published by the instance.
 
-## `attach-tabs` exit codes)
+## `attach-tabs` exit codes (round 6, XOS-09)
 
 The `attach-tabs` subcommand emits a stable set of exit codes. Callers
 (orchestrate `init-run`, smoke runners, CI consumers) must discriminate them:

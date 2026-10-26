@@ -971,7 +971,41 @@ pool_max_ordinal() {
   printf '%s\n' "$1" | awk -F'\t' 'BEGIN{m=0}{if($1+0>m)m=$1+0}END{print m}'
 }
 
-# --- version comparison (POSIX, no sort -V: BSD sort lacks it) -------------------
+# --- the orchestrator: ONE fact, shared by everyone who must not target it ------
+# The naming convention reserves the [00] slot for the root/orchestrator (the
+# title parser below refuses to hand it to a worker), and the run records its
+# root in the cache key root_session (root_session_hint for the root the
+# operator declared). The orchestrator is NEVER the target of a prompt: the
+# prompt would come back to the agent that is supposed to delegate, and the
+# task would end up being done by the orchestrator instead of by a worker.
+# The constant is the ORDINAL (the pool prints it without the brackets), so
+# the two places that must agree cannot drift.
+ORCHESTRATOR_ORDINAL=0
+
+# orchestrator_sid -> the run's orchestrator (the root the run used).
+# The run's own record of its root is the source: root_session is written when
+# the root is created or reused, and root_session_hint is the root the
+# operator declared. Reading it is free (the cache is already required by
+# every command that sends a prompt).
+orchestrator_sid() {
+  for _os_k in root_session root_session_hint; do
+    cache_has "$_os_k" || continue
+    _os_v=$(cache_get "$_os_k")
+    [ -n "$_os_v" ] || continue
+    printf '%s' "$_os_v"
+    return 0
+  done
+  return 1
+}
+
+# is_orchestrator_sid SID -> 0 when the SID is the run's orchestrator.
+is_orchestrator_sid() {
+  _is_sid="${1:-}"
+  [ -n "$_is_sid" ] || return 1
+  _is_root=$(orchestrator_sid) || return 1
+  [ "$_is_root" = "$_is_sid" ]
+}
+
 # --- naming convention (single source of truth; DRY) -------------------------------
 # Pattern: "[NN] Name" — two-digit ordinal, space, human name. Examples:
 #   [00] Orchestrator       root / orchestrator
@@ -1007,7 +1041,7 @@ title_normalize() {
 # Pure awk so it stays POSIX and needs no subshell round-trip (DRY: the only
 # place that knows the pattern is title_normalize's contract, restated once).
 worker_list() {
-  printf '%s' "$1" | tr ',' '\n' | awk '
+  printf '%s' "$1" | tr ',' '\n' | awk -v orch="$ORCHESTRATOR_ORDINAL" '
     function slug(s,   t) { t = s; sub(/^\[[0-9]+\][ \t]*/, "", t); gsub(/[ \t]/, "", t); return t }
     { line = $0
       sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
@@ -1028,7 +1062,7 @@ worker_list() {
       # The 00 ordinal is reserved for the orchestrator root. A worker cannot
       # take it, not even explicitly: init-run always creates the root, and two
       # [00] slots would make the run identity ambiguous.
-      if (ordtxt + 0 == 0) { n = (n > 0 ? n : 1); ord = n; ordtxt = sprintf("%02d", n) }
+      if (ordtxt + 0 == orch + 0) { n = (n > 0 ? n : 1); ord = n; ordtxt = sprintf("%02d", n) }
       key = "[" ordtxt "] " line
       # Same criterion as find_dedup: the slug ignores the ordinal, so
       # "Vermithrax" and "[01] Vermithrax" are recognized as the same worker.
