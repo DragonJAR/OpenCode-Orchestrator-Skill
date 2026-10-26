@@ -131,15 +131,21 @@ jobs:
           # failed there. Asking the interpreter directly is the same test
           # with no PATH, no PYTHONPATH and no platform separator.
           #
-          # The proxy must be ARMED: the raw python output has to carry the
-          # CR. Without this assertion the step could not fail at all -- `py`
-          # strips the CR itself, so the comparison below passed with AND
-          # without contamination (the guard said the truth and stopped
+          # The proxy must be ARMED: the python's own output has to carry
+          # the CR. Without this assertion the step could not fail at all --
+          # `py` strips the CR itself, so the comparison below passed with
+          # AND without contamination (the guard said the truth and stopped
           # nothing). Armed here, the failure it names is real.
-          raw=$(python3 -c 'import sys; sys.stdout.reconfigure(newline="\r\n"); print("ses_x")')
-          clean=$(printf '%s' "$raw" | tr -d '\r')
-          if [ "$clean" = "$raw" ]; then
-            echo "ERROR: the CRLF proxy is not armed: the raw python output carries no CR"
+          #
+          # The CR is measured on the bytes the interpreter WRITES to a file,
+          # not on what the shell keeps in a variable: on Windows the
+          # shell's own pipe handling may normalize the CR before the
+          # variable, and then the assertion would be measuring the
+          # platform instead of the proxy.
+          python3 -c 'import sys; sys.stdout.reconfigure(newline="\r\n"); print("ses_x")' > "$RUNNER_TEMP/crlf.txt"
+          if ! od -An -tx1 < "$RUNNER_TEMP/crlf.txt" | tr ' ' '\n' | grep -qx '0d'; then
+            echo "ERROR: the CRLF proxy is not armed: the python output carries no CR"
+            od -An -tx1 < "$RUNNER_TEMP/crlf.txt"
             exit 1
           fi
           # And the value the shell READS through the helper must not carry
