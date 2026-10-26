@@ -114,14 +114,6 @@ jobs:
           # cursor, a count). This forces that behaviour on EVERY runner, so
           # the regression is caught everywhere and not only on Windows.
           command -v python3 >/dev/null 2>&1 || { echo "python3 not available: skipping the CRLF proxy"; exit 0; }
-          SIM="$(mktemp -d)"
-          SITE="$SIM/site"; BIN="$SIM/bin"
-          mkdir -p "$SITE" "$BIN"
-          REAL_PY="$(command -v python3)"
-          printf '%s\n' 'import sys' 'try:' '    sys.stdout.reconfigure(newline="\r\n")' 'except Exception:' '    pass' > "$SITE/sitecustomize.py"
-          printf '%s\n' '#!/bin/sh' "export PYTHONPATH=\"$SITE:\${PYTHONPATH:+:\$PYTHONPATH}\"" "exec \"$REAL_PY\" \"\$@\"" > "$BIN/python3"
-          chmod +x "$BIN/python3"
-          PATH="$BIN:$PATH"; export PATH
           # os/_common.sh is SOURCED, so $0 is THIS shell's path, not the
           # library's directory. The shared awk library (scripts/_json.awk) is
           # located from what the CALLER knows: the real callers export
@@ -131,22 +123,30 @@ jobs:
           SELF_DIR="$(cd SKILL/scripts && pwd)"; export SELF_DIR
           . SKILL/scripts/os/_paths.sh
           . SKILL/scripts/os/_common.sh
-          # The proxy must be ARMED: the raw python output has to carry the CR.
-          # Without this assertion the step could not fail at all -- `py`
+          # The proxy is ONE python that ends its line with CRLF, asked for
+          # where it matters (the same interpreter the `py` helper runs). It
+          # used to be installed through a PATH wrapper and a sitecustomize
+          # directory: on Windows the PYTHONPATH separator is ';' and not ':',
+          # so the injection never reached the interpreter and the step
+          # failed there. Asking the interpreter directly is the same test
+          # with no PATH, no PYTHONPATH and no platform separator.
+          #
+          # The proxy must be ARMED: the raw python output has to carry the
+          # CR. Without this assertion the step could not fail at all -- `py`
           # strips the CR itself, so the comparison below passed with AND
           # without contamination (the guard said the truth and stopped
           # nothing). Armed here, the failure it names is real.
-          raw=$(python3 -c 'print("ses_x")')
+          raw=$(python3 -c 'import sys; sys.stdout.reconfigure(newline="\r\n"); print("ses_x")')
           clean=$(printf '%s' "$raw" | tr -d '\r')
           if [ "$clean" = "$raw" ]; then
             echo "ERROR: the CRLF proxy is not armed: the raw python output carries no CR"
             exit 1
           fi
-          # And the value the shell READS must not carry it: that is what the
-          # `py` helper is for.
-          v=$(py -c 'print("ses_x")')
+          # And the value the shell READS through the helper must not carry
+          # it: that is what the `py` helper is for.
+          v=$(py -c 'import sys; sys.stdout.reconfigure(newline="\r\n"); print("ses_x")')
           [ "$v" = "ses_x" ] || { echo "CR contamination in a value read from python: [$v]"; exit 1; }
-          n=$(py -c 'print(7)')
+          n=$(py -c 'import sys; sys.stdout.reconfigure(newline="\r\n"); print(7)')
           [ "$n" = "7" ] || { echo "CR contamination in a number read from python: [$n]"; exit 1; }
           v=$(printf '{"id":"ses_x","n":7}' | json_get_field id)
           [ "$v" = "ses_x" ] || { echo "wrong extracted value: [$v]"; exit 1; }
@@ -167,7 +167,11 @@ jobs:
           # green. Here the status is read.
           failed=0
           for f in $SH_FILES; do
-            out=$(shellcheck --severity=warning "$f" 2>&1); rc=$?
+            # The `if` form, NOT `out=$(...); rc=$?`: the runner's shell runs
+            # with `set -e`, and an assignment whose command substitution fails
+            # aborts the step BEFORE the status can be read. Inside `if` the
+            # command is exempt from `set -e` and its status is readable.
+            if out=$(shellcheck --severity=warning "$f" 2>&1); then rc=0; else rc=$?; fi
             if [ "$rc" -gt 1 ]; then
               printf '%s\n' "$out"
               echo "ERROR: shellcheck could not analyse $f"
