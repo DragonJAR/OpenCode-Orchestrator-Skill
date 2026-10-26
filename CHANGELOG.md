@@ -95,6 +95,13 @@ still OPEN, and the gate was checking things it could not fail on.
 - **A dead-variable check hid shellcheck's own failure**, and a
   command-table row whose command did not parse was skipped instead of
   reported: a skipped row is an unchecked promise.
+- **The new gate was proved against the runners that use it, and three of
+  its own steps were wrong before the runners said so**: a status read in a
+  way that `set -e` swallows, a CRLF proxy that never reached the
+  interpreter on Windows, and a python that decoded the files with the
+  locale instead of with UTF-8. The local simulation now reproduces the
+  runner's shell (`bash -e -o pipefail`) and its environment (`LC_ALL=C`),
+  because two of the three were green here and red there.
 
 ### Fixed — the prose
 - The READMEs described **fifteen** hard rules (there are sixteen) and
