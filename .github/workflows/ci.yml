@@ -19,6 +19,13 @@ jobs:
       run:
         # Git Bash on the Windows runner: the scripts are POSIX sh.
         shell: bash
+    env:
+      # The same environment the skill's own scripts force (LC_ALL=C in
+      # os/_common.sh): a python that reads a file must not decode it with
+      # the LOCALE's encoding. On Windows that is cp1252, and "version" with
+      # its accent came out as mojibake that the comparison could not
+      # parse. With LC_ALL=C the interpreter runs in UTF-8 mode everywhere.
+      LC_ALL: C
     steps:
       - uses: actions/checkout@v4
       - name: Install shellcheck
@@ -204,8 +211,11 @@ jobs:
           python3 - <<'PY'
           import re, pathlib, sys
           root = pathlib.Path("SKILL")
-          skill = (root / "SKILL.md").read_text()
-          code = "\n".join(p.read_text() for p in sorted(root.rglob("*.sh")))
+          # UTF-8 EXPLICITLY: the files are UTF-8 whatever the locale says
+          # (on Windows the locale encoding is cp1252 and a file with an
+          # accent would be read as mojibake).
+          skill = (root / "SKILL.md").read_text(encoding="utf-8")
+          code = "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.rglob("*.sh")))
           bad, seen = [], set()
           for line in skill.splitlines():
               if not line.startswith("|") or "orchestrate.sh" not in line:
@@ -242,9 +252,12 @@ jobs:
           # gate carries the check.
           python3 - <<'PY'
           import re, pathlib, sys
-          skill = pathlib.Path("SKILL/SKILL.md").read_text()
-          en = pathlib.Path("README.md").read_text()
-          es = pathlib.Path("README.es.md").read_text()
+          # UTF-8 EXPLICITLY: the files are UTF-8 whatever the locale says
+          # (on Windows the locale encoding is cp1252 and "version" with its
+          # accent would be read as mojibake the comparison cannot parse).
+          skill = pathlib.Path("SKILL/SKILL.md").read_text(encoding="utf-8")
+          en = pathlib.Path("README.md").read_text(encoding="utf-8")
+          es = pathlib.Path("README.es.md").read_text(encoding="utf-8")
           v1 = re.search(r'skill_version:\s*"([0-9.]+)"', skill)
           v2 = re.search(r"release-([0-9.]+)", en)
           v3 = re.search(r"versi.n-([0-9.]+)", es)
