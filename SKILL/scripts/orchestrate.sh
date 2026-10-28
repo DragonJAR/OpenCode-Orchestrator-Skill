@@ -16,8 +16,8 @@ while [ $# -gt 0 ]; do
     # adapter to load. `shift 2` with no value left does not advance the
     # argument list (POSIX), so the loop would spin forever -- hence the
     # inline check here.
-    --os) [ $# -ge 2 ] || { printf '%s\n' 'ERROR: --os requires a value' >&2; exit 2; }; OS_OVERRIDE="$2"; shift 2 ;;
-    --os=*) OS_OVERRIDE="${1#--os=}"; shift ;;
+    --os) [ $# -ge 2 ] && [ -n "$2" ] || { printf '%s\n' 'ERROR: --os requires a value' >&2; exit 2; }; OS_OVERRIDE="$2"; shift 2 ;;
+    --os=*) OS_OVERRIDE="${1#--os=}"; [ -n "$OS_OVERRIDE" ] || { printf '%s\n' 'ERROR: --os requires a value' >&2; exit 2; }; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -161,7 +161,7 @@ sub_sessions() {
   printf '%s' "$RESP" | tr -d '\n' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v d="$(printf '%s' "$PROJ_DIR" | sed 's/\\/\\\\/g')" "$_JSON_LIB"'
     { json_field($0, "directory", ""); dd = JSON_VALUE; if (dd != d) next
-      json_field($0, "id", ""); _id = JSON_VALUE
+      json_field($0, "id", "ses_"); _id = JSON_VALUE
       json_field($0, "output", ""); _out = JSON_VALUE
       json_field($0, "title", ""); _ti = JSON_VALUE
       printf "%s out=%-6s %s\n", _id, _out, _ti }'
@@ -242,7 +242,7 @@ sub_wait_idle() {
   # as if it were a transient API error and only gave up at --deadline (600s
   # by default) as a misleading timeout. 404 / bad JSON / no ses_ id -> exit 5.
   R=$(opencode api GET "/api/session/$SID" 2>/dev/null) || R=""
-  case "$R" in *'"id":"ses_'*) : ;; *) printf 'wait-idle=session-not-found session=%s\n' "$SID"; exit 5 ;; esac
+  session_exists_json "$R" || { printf 'wait-idle=session-not-found session=%s\n' "$SID"; exit 5; }
   # Pool-safe: sessions are REUSED across tasks, so a time.idle inherited
   # from a previous run would cause this wait to return immediately with stale
   # values. send-prompt caches the dispatch timestamp per session; if it
@@ -276,7 +276,7 @@ sub_wait_idle() {
   # hang into a detectable state lets the orchestrator reassign (previously it
   # was an infinite silence indistinguishable from slow work).
   STUCK_SECS=900
-  START=$(date +%s); LAST_UPD=""; STUCK_AT=0
+  START=$(date +%s); LAST_UPD="${W_UPD:-}"; STUCK_AT=$START
   while : ; do
     now=$(date +%s)
     [ $((now - START)) -ge "$DEADLINE" ] && { printf 'wait-idle=timeout session=%s\n' "$SID"; exit 3; }
@@ -384,11 +384,13 @@ resolve_gate() {
     GATE=$(printf '%s\n' "$PROBE" | sed -n 's/^gate=//p')
     GATE_REASON=$(printf '%s\n' "$PROBE" | sed -n 's/^gate_reason=//p')
     GATE_CWD=$(printf '%s\n' "$PROBE" | sed -n 's/^tui_cwd=//p')
+    GATE_CHANNEL=$(printf '%s\n' "$PROBE" | sed -n 's/^tui_channel=//p')
  # Refresh the cache so attach-tabs sees the same decision (DRY).:
     # via cache_put, never a raw `>` (a symlinked key must not be followed).
     cache_put tabs_gate "$GATE"
     cache_put tabs_cwd "$GATE_CWD"
     cache_put tabs_reason "$GATE_REASON"
+    [ -n "$GATE_CHANNEL" ] && cache_put tabs_channel "$GATE_CHANNEL"
     cache_put tui_version_pin "$WANT_PIN"
     return 0
   fi
@@ -553,10 +555,23 @@ sub_init_run() {
         printf 'ERROR: [%02d] %s is %s; it is not overwritten. Wait for wait-idle before reassigning work to it.\n' "$P_ORD" "$P_NAME" "$P_ST" >&2
         FAILED=$((FAILED + 1)); continue
       fi
+      t=$(title_normalize "$P_ORD" "$P_NAME")
       printf 'reused  %s -> %s\n' "$t" "$ID"
       REUSED=$((REUSED + 1))
     else
-      MAXORD=$((MAXORD + 1))
+      # The ordinal is DECIMAL: the shell's arithmetic reads a leading zero as
+      # octal and "09" is not an octal number ("value too great for base"), so
+      # a counter that carried one broke on the next worker -- in bash it
+      # silently repeated the ordinal (two workers with the same [NN]) and in
+      # dash it killed the run. The zeros are stripped here, at the ONE place
+      # where an ordinal enters the arithmetic.
+      REQ_ORD=$(printf '%s' "$t" | sed -n 's/^\[\([0-9][0-9]*\)\].*/\1/p' | sed 's/^0*//')
+      [ -n "$REQ_ORD" ] || REQ_ORD=0
+      if [ "$REQ_ORD" -gt "$MAXORD" ] 2>/dev/null; then
+        MAXORD=$REQ_ORD
+      else
+        MAXORD=$((MAXORD + 1))
+      fi
       t=$(title_normalize "$MAXORD" "$t")
       ID=$(sub_create_worker --title "$t" | awk -F= '/^worker_id/{print $2}')
       if [ -z "$ID" ]; then
@@ -665,9 +680,9 @@ sub_verify_daughters() {
   # BOTH a 404 and an unreachable API, so the rc alone cannot tell them apart.
   # The rc is still not ignored: it is folded into the message.
   WINFO=$(opencode api GET "/api/session/$WORKER_ID" 2>/dev/null) || WINFO=""
-  case "$WINFO" in *'"id":"ses_'*) : ;;
-    *) printf 'ERROR: verify-daughters: worker id not found (or the API is unreachable): %s; nothing was listed. Fail-closed.\n' "$WORKER_ID" >&2; exit 2 ;;
-  esac
+  session_exists_json "$WINFO" || {
+    printf 'ERROR: verify-daughters: worker id not found (or the API is unreachable): %s; nothing was listed. Fail-closed.\n' "$WORKER_ID" >&2; exit 2;
+  }
   # PAGINATED: a single page holds 50 sessions, so a worker with more
   # children than that was silently under-verified and R14 reported
   # "verified_ok=N failures=0" over an INCOMPLETE list.
@@ -783,6 +798,9 @@ tabs_prune_ids() {
   # was a 5th copy of the same 6-line block, and the merge python carried a
   # 6th resolver with different rules.
   _tj=$(tabs_target_path 2>/dev/null) || { printf '0\n'; return 0; }
+  os_tabs_extra_check "$_tj" >/dev/null 2>&1 || { printf '0\n'; return 0; }
+  os_tabs_adapt_paths "$_tj" ""
+  _tj="$TABS_PATH"
   [ -f "$_tj" ] || { printf '0\n'; return 0; }
   DELETED_IDS="$*"
   export DELETED_IDS
@@ -803,16 +821,22 @@ if not deleted or "" in deleted:
 p = sys.argv[1]
 with open(p, "r+") as f:
     try: d = json.load(f, strict=False)
-    except Exception: d = {"global":{"tabs":[]}, "cwd":{}}
+    except Exception: d = {}
+    if not isinstance(d, dict) or not isinstance(d.get("cwd"), dict):
+        sys.stdout.buffer.write(b"0"); raise SystemExit
     removed = 0
     for cwd_key in list(d.get("cwd", {}).keys()):
-        tabs = d["cwd"][cwd_key].get("tabs", [])
-        new = [t for t in tabs if t.get("sessionID") not in deleted]
+        scope = d["cwd"].get(cwd_key)
+        if not isinstance(scope, dict): continue
+        tabs = scope.get("tabs", [])
+        if not isinstance(tabs, list): continue
+        new = [t for t in tabs if isinstance(t, dict) and t.get("sessionID") not in deleted]
         removed += len(tabs) - len(new)
-        d["cwd"][cwd_key]["tabs"] = new
+        scope["tabs"] = new
     if removed:
         f.seek(0); f.truncate()
         json.dump(d, f, indent=2)
+        f.flush(); os.fsync(f.fileno())
 sys.stdout.buffer.write(str(removed).encode("utf-8"))
 ' "$_tj"
 }
@@ -891,8 +915,9 @@ if cands: print(cands[0]["id"])
   # redirect the python's stderr into the attacker's file. Fail closed.
   _clean_err=$(mktemp 2>/dev/null) || die "clean: cannot create a temporary file for the enumeration errors"
   TO_DELETE=$(PROJ_DIR="$PROJ_DIR" ORCH_SID="$ORCH_SID" py -c '
-import json, os, re, subprocess
+import json, os, re, subprocess, urllib.parse
 orch = os.environ["ORCH_SID"]; proj = os.environ["PROJ_DIR"]
+proj_q = "/api/session?directory=" + urllib.parse.quote(proj, safe="")
 seen = {orch}; stack = []
 _pages = {}
 def get_all(path):
@@ -900,25 +925,15 @@ def get_all(path):
 
     Same contract as the shell helper api_get_all_pages (DRY): the separator is
     "?" or "&" depending on the path, limit=200, a stable-cursor guard, a
-    30-iteration cap and ONE retry of the same url on a malformed page.
-
-    Two defects fixed here:
-    * the url was built as path + "?limit=200" ALWAYS, so a path that already
-      had a query string ("/api/session?parentID=X") became
-      "...?parentID=X?limit=200": the second "?" landed INSIDE the parentID
-      value, the filter matched nothing and the child enumeration silently
-      returned an empty list (no children, no topological order).
-    * a malformed page did `break`, so a PARTIAL list was returned and the
-      caller treated it as the complete one (B-pagination-silent class). It
- now raises, and the shell turns that into the fail-closed die.
-
-    Results are memoised per path: the same list was fetched up to three
-    times (children, children map, session info)."""
+    30-iteration cap (fail-closed if more pages remain) and ONE retry of the
+    same url on a malformed page."""
     if path in _pages: return _pages[path]
     out = []; cursor = None; prev = None; i = 0
     while i < 30:
         i += 1
-        if cursor is not None and cursor == prev: break
+        if cursor is not None and cursor == prev:
+            cursor = None
+            break
         prev = cursor
         sep = "&" if "?" in path else "?"
         url = path + sep + "limit=200" + (("&cursor=%s" % cursor) if cursor else "")
@@ -936,6 +951,8 @@ def get_all(path):
         out.extend(d.get("data", []) or [])
         cursor = (d.get("cursor") or {}).get("next") or None
         if not cursor: break
+    if i >= 30 and cursor:
+        raise SystemExit("clean: pagination cap (30 pages) reached on %s; refusing to clean an incomplete catalog" % path)
     _pages[path] = out
     return out
 # 1. Direct children of the orchestrator
@@ -945,7 +962,7 @@ for c in get_all(f"/api/session?parentID={orch}"):
         seen.add(sid); stack.append(sid)
 # 2. All [NN] Name workers in this project (orchestrator convention)
 pat = re.compile(r"^\[\d+\](?:s\[\d+\])?\s+")
-for s in get_all("/api/session"):
+for s in get_all(proj_q):
     sid = s.get("id")
     if sid and s.get("location",{}).get("directory","") == proj and pat.match(s.get("title","")) and sid not in seen:
         seen.add(sid); stack.append(sid)
@@ -982,7 +999,7 @@ def visit(n):
 for n in seen:
     visit(n)
 # 6. Output: project, not the orchestrator, in topological deletion order
-session_info = {s["id"]: s for s in get_all("/api/session")}
+session_info = {s["id"]: s for s in get_all(proj_q)}
 for sid in order:
     if sid == orch: continue
     info = session_info.get(sid, {})

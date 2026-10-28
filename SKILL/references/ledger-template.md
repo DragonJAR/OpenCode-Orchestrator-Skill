@@ -219,7 +219,7 @@ Accepted absolute path forms: POSIX, Windows drive (`C:\x` or `C:/x`, the letter
 
 ## Validators: dependencies, usage and exit codes
 
-Both scripts are POSIX `sh` + `awk`; `validate_ledger_closed.sh` additionally uses `dirname`. They set `LC_ALL=C` (byte-based lengths and comparisons, locale-independent) and, if `awk` is missing, they exit with code 2 and `ERROR: awk not available`. They must be extracted with **LF** line endings (the repository enforces it with `.gitattributes`: `*.sh text eol=lf`); a copy converted to CRLF fails under `sh` with a non-zero code. They need no Python, yq, or data outside the ledger, the evidence and the workspace. On Windows, run them from Git Bash or WSL; without a shell, follow the manual fallback in [SKILL.md](../SKILL.md#validators).
+Both scripts are POSIX `sh` + `awk` (sharing `scripts/_validators.awk`), and `validate_ledger_closed.sh` uses `dirname` to locate its sibling script. They set `LC_ALL=C` (byte-based lengths and comparisons, locale-independent) and, if `awk` is missing, they exit with code 2 and `ERROR: awk not available`. They must be extracted with **LF** line endings (the repository enforces it with `.gitattributes`: `*.sh text eol=lf`); a copy converted to CRLF fails under `sh` with a non-zero code. They need no Python, yq, or data outside the ledger, the evidence and the workspace. On Windows, run them from Git Bash or WSL; without a shell, follow the manual fallback in [SKILL.md](../SKILL.md#validators).
 
 | Script | Usage | What it checks |
 | --- | --- | --- |

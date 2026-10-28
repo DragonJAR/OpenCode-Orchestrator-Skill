@@ -144,7 +144,7 @@ api_get() {  # PATH [extra curl args...] -> the body on stdout
    printf 'ERROR: the request to %s failed (transport)\n' "$_apath" >&2
    return 1
  }
- printf '%s' "$_abody" | tr -d ' \n'
+ printf '%s' "$_abody" | tr -d '\r\n'
 }
 
 # 3) /api/info (version/pid) + openapi guard (an HTML body is not a schema)
@@ -171,7 +171,7 @@ esac
 
 # 4) canonical location + projectID for DIR (deepObject query)
 LOC=$(api_get /api/location -G --data-urlencode "location[directory]=$DIR") || exit 1
-CANON=$(printf '%s' "$LOC" | json_get_field canonical)
+CANON=$(printf '%s' "$LOC" | json_get_field canonical | sed 's/\\\\/\\/g')
 # The project id is a NESTED path ("project":{"id":...}): two calls of the same
 # getter, instead of a nested regex carrying its own offsets.
 _proj_obj=$(printf '%s' "$LOC" | json_get_field project)
@@ -198,7 +198,7 @@ _ag_field() {  # MODE -> the comma-separated ids of that mode
   # The shared library is REQUIRED here: a missing library is a broken
   # install, and a private copy of the formula is the drift this removes.
   [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: scripts/_json.awk\n' >&2; exit 2; }
-  printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | \
+  printf '%s' "$AG" | tr -d ' \t' | sed 's/},{"id":"/\n{"id":"/g' | \
     awk -v mode="$1" "$_JSON_LIB"'
     index($0, "\"mode\":\"" mode "\"") { json_field($0, "id", ""); if (JSON_FOUND && JSON_VALUE != "") print JSON_VALUE }' | paste -sd, -
 }
@@ -211,7 +211,7 @@ printf 'agents_primary=%s\nagents_subagent=%s\n' "${P:-none}" "${S:-none}"
 # is answered here instead of by a manual query of /openapi.json. Only the
 # PUBLISHED routes are listed, so a missing one is simply absent.
 _session_routes() {
-  printf '%s' "$SCHEMA_BODY" | sed 's/},"\(\/[a-z][a-z]*\/\)/}\n\1/g' | awk "$_JSON_LIB"'
+  printf '%s' "$SCHEMA_BODY" | tr -d ' \t' | sed 's/},"\(\/[a-z][a-z]*\/\)/}\n\1/g' | awk "$_JSON_LIB"'
     /^\/api\/session/ { _l = json_route_labels($0) }
     END { print _l }'
 }
@@ -224,7 +224,7 @@ printf 'session_routes=%s\n' "$(_session_routes)"
 # reading their rules would say "no" about a capability they are not the
 # ones using.
 _children_perm() {
-  printf '%s' "$AG" | sed 's/},{"id":"/\n{"id":"/g' | awk "$_JSON_LIB"'
+  printf '%s' "$AG" | tr -d ' \t' | sed 's/},{"id":"/\n{"id":"/g' | awk "$_JSON_LIB"'
     index($0, "\"mode\":\"primary\"") {
       # The SHARED getter, like the one _ag_field uses above: the private
       # copy needed the exact bytes "id":" and read a pretty-printed catalog

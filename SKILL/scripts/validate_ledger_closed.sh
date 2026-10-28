@@ -78,45 +78,8 @@ function badline(msg) {
   bad = 1
   if (!reported) { printf "[FAIL] line %d: %s\n", FNR, msg | "cat 1>&2"; reported = 1 }
 }
-function is_drive(p) {
-  return length(p) >= 3 && substr(p, 1, 1) ~ /[A-Za-z]/ && substr(p, 2, 1) == ":" &&
-         (substr(p, 3, 1) == "/" || substr(p, 3, 1) == "\\")
-}
-function is_unc(p) { return substr(p, 1, 2) == "\\\\" }
-function is_abs(p) { return substr(p, 1, 1) == "/" || is_drive(p) || is_unc(p) }
-# Collapse ".", ".." and repeated separators; Windows forms use "/" and an upper-case drive.
-function normp(p,   root, rest, n, parts, i, m, out, k, res, abs) {
-  root = ""; rest = p; abs = 0
-  if (is_drive(p)) { root = toupper(substr(p, 1, 1)) ":/"; rest = substr(p, 3); gsub(/\\/, "/", rest); abs = 1 }
-  else if (is_unc(p)) { root = "//"; rest = substr(p, 3); gsub(/\\/, "/", rest); abs = 1 }
-  else if (substr(p, 1, 1) == "/") { root = "/"; abs = 1 }
-  n = split(rest, parts, "/"); m = 0
-  for (i = 1; i <= n; i++) {
-    if (parts[i] == "" || parts[i] == ".") continue
-    if (parts[i] == "..") { if (m > 0 && out[m] != "..") m--; else if (!abs) out[++m] = ".." }
-    else out[++m] = parts[i]
-  }
-  res = ""
-  for (k = 1; k <= m; k++) res = res (k > 1 ? "/" : "") out[k]
-  if (abs) return root res
-  return (res == "") ? "." : res
-}
-function under(base, p,   lb) {
-  if (base == p) return 1
-  lb = length(base)
-  if (substr(base, lb, 1) == "/") return substr(p, 1, lb) == base
-  return substr(p, 1, lb) == base && substr(p, lb + 1, 1) == "/"
-}
-# Git Bash / WSL / Cygwin POSIX view of a drive (/c/x, /mnt/c/x, /cygdrive/c/x) to C:/x.
-function posix_to_win(p,   q) {
-  q = p
-  if (substr(q, 1, 5) == "/mnt/") q = substr(q, 5)
-  else if (substr(q, 1, 10) == "/cygdrive/") q = substr(q, 10)
-  if (length(q) >= 2 && substr(q, 1, 1) == "/" && substr(q, 2, 1) ~ /[A-Za-z]/ &&
-      (length(q) == 2 || substr(q, 3, 1) == "/"))
-    return normp(toupper(substr(q, 2, 1)) ":" (length(q) == 2 ? "/" : substr(q, 3)))
-  return p
-}
+# Path helpers (is_drive, is_unc, is_win, is_abs, normpath, posix_to_win, covers)
+# live in _validators.awk (single source of truth, shared with validate_dag.sh).
 function is_drive_norm(p) { return p ~ /^[A-Za-z]:\// }
 # Rebase a path under run.location.directory onto run.location.directory_client, check
 # workspace containment and return the path in the PHYSICAL view of the shell (pwd -P), so
@@ -124,25 +87,25 @@ function is_drive_norm(p) { return p ~ /^[A-Za-z]:\// }
 # (absolute paths outside it, or relative paths with "..").
 function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
   if (p == "") return p
-  q = normp(p)
+  q = normpath(p)
   # Workspace form is resolved once for BOTH branches: winmode drives the
   # backslash->slash conversion of a relative path, which must match
   # validate_dag.sh canon_path (NS_WIN && !is_abs(p)). Reading winmode without
   # assigning it here left the relative branch below as dead code.
-  srv = (SRVDIR != "") ? normp(SRVDIR) : ""
-  cli = (CLIDIR != "") ? normp(CLIDIR) : srv
+  srv = (SRVDIR != "") ? normpath(SRVDIR) : ""
+  cli = (CLIDIR != "") ? normpath(CLIDIR) : srv
   winmode = (cli != "" && is_drive_norm(cli))
   if (is_abs(p)) {
     if (winmode && !is_drive_norm(q)) q = posix_to_win(q)
-    if (srv != "" && cli != "" && under(srv, q)) {
+    if (srv != "" && cli != "" && covers(srv, q)) {
       rel = (q == srv) ? "" : substr(q, length(srv) + (substr(srv, length(srv), 1) == "/" ? 1 : 2))
-      q = (rel == "") ? cli : normp(cli "/" rel)
+      q = (rel == "") ? cli : normpath(cli "/" rel)
     }
-    wsn = normp(ENVIRON["WS_PHYS"]); wsw = wsn
+    wsn = normpath(ENVIRON["WS_PHYS"]); wsw = wsn
     if (winmode && !is_drive_norm(wsn)) wsw = posix_to_win(wsn)
-    if (!under(wsw, q)) return "!OUTSIDE!" p
+    if (!covers(wsw, q)) return "!OUTSIDE!" p
     rel = (q == wsw) ? "" : substr(q, length(wsw) + (substr(wsw, length(wsw), 1) == "/" ? 1 : 2))
-    return (rel == "") ? wsn : normp(wsn "/" rel)
+    return (rel == "") ? wsn : normpath(wsn "/" rel)
   }
   if (q == ".." || substr(q, 1, 3) == "../") return "!OUTSIDE!" p
   if (winmode) gsub(/\\/, "/", q)
@@ -169,8 +132,8 @@ function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
     task_id[current] = PVAL
     task_state[current] = task_outcome[current] = task_runtime[current] = ""
     task_kind[current] = task_parent[current] = task_criterion[current] = task_output[current] = ""
-    task_notas[current] = ""
-    task_runtime_null[current] = 0; task_output_null[current] = 0
+    task_session[current] = ""; task_notas[current] = ""
+    task_session_null[current] = 0; task_runtime_null[current] = 0; task_output_null[current] = 0
     task_evidence_n[current] = 0; task_open = 1
     next
   }
@@ -197,7 +160,7 @@ function resolve_path(p,   q, srv, cli, rel, wsn, wsw, winmode) {
       if (key == "task_kind") task_kind[current] = val
       else if (key == "estado") task_state[current] = val
       else if (key == "execution_outcome") task_outcome[current] = val
-      else if (key == "sessionID") task_session_null[current] = val_is_null
+      else if (key == "sessionID") { task_session[current] = val; task_session_null[current] = val_is_null }
       else if (key == "runtime_status") { task_runtime[current] = val; task_runtime_null[current] = val_is_null }
       else if (key == "criterion") task_criterion[current] = val
       else if (key == "output_path") { task_output[current] = val; task_output_null[current] = val_is_null }
@@ -209,11 +172,23 @@ END {
   for (i = 1; i <= task_n; i++) {
     integrated = ""
     if (task_kind[i] == "worker_session" && task_state[i] == "verified") {
-      for (j = 1; j <= task_n; j++)
+      # A verified child counts as integrated only with a REAL session id:
+      # two children sharing one sessionID, or a child with an empty one, are
+      # not two children. This is the SAME rule validate_dag.sh applies (the
+      # DAG gate already refuses those ledgers): the closing gate tells the
+      # same truth instead of carrying a second, weaker definition of
+      # "integrated".
+      for (j = 1; j <= task_n; j++) {
         if (task_kind[j] == "subagent" && !task_parent_null[j] &&
             task_parent[j] == task_id[i] && task_state[j] == "verified" &&
-            !task_session_null[j])
-          integrated = integrated (integrated == "" ? "" : ",") task_id[j]
+            !task_session_null[j] && task_session[j] != "") {
+          cskey = task_id[i] SUBSEP task_session[j]
+          if (!(cskey in seen_child_sid)) {
+            seen_child_sid[cskey] = 1
+            integrated = integrated (integrated == "" ? "" : ",") task_id[j]
+          }
+        }
+      }
     }
     clean_notas = task_notas[i]
     gsub(/\034/, " ", clean_notas)

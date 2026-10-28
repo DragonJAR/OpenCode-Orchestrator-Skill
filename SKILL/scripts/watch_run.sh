@@ -62,9 +62,10 @@ else
   printf '%s\n' "watch_run: ERROR: shared awk library missing: $SCRIPT_DIR/_json.awk" >&2
   exit 2
 fi
-_wfield() {  # KEY JSON -> the value (string, number or raw array)
-  printf '%s' "$2" | awk -v key="$1" "$_JSON_LIB"'
-    { json_field($0, key, ""); print JSON_VALUE }'
+_wfield() {  # KEY JSON [PREFIX] -> the value (string, number or raw array)
+  printf '%s' "$2" | awk -v key="$1" -v pre="${3:-}" "$_JSON_LIB"'
+    { buf = buf (NR > 1 ? " " : "") $0 }
+    END { json_field(buf, key, pre); if (JSON_FOUND) print JSON_VALUE }'
 }
 _api() {  # PATH -> the body on stdout (empty when the request failed)
   opencode api GET "$1" 2>/dev/null || printf ''
@@ -77,7 +78,7 @@ _api() {  # PATH -> the body on stdout (empty when the request failed)
 # new code. The id is read with the SHARED getter, so a pretty-printed answer
 # ("id": "ses_...") is not read as "not found".
 _wprobe=$(_api "/api/session/$SESSION")
-case "$(_wfield id "$_wprobe")" in
+case "$(_wfield id "$_wprobe" ses_)" in
   ses_*) : ;;
   *) printf '%s\n' "watch_run: session-not-found session=$SESSION (fail-closed; not polling to the deadline)" >&2; exit 2 ;;
 esac
@@ -103,7 +104,7 @@ while : ; do
   # the route answers empty, which is the same as "no pending permission".
   _perm=$(_api "/api/session/$SESSION/permission" | tr -d ' \n')
   plist=$(_wfield data "$_perm")
-  [ -n "$plist" ] && warn="awaiting-approval"
+  [ -n "$plist" ] && [ "$plist" != "[]" ] && warn="awaiting-approval"
   cur="idle=${idle:-no} outcome=${outcome:-none} artifacts=$nart/$total $warn"
   if [ "$cur" != "$prev" ]; then
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cur"

@@ -4,7 +4,73 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.8.0] - 2026-10-27
+
+### The parsers and the path rules, in one place
+- **The JSON getter now reads what a JSON string actually contains.** A value
+  with an escaped quote (`\"`), a backslash, or a `{`/`}`/`[`/`]` inside the
+  string was cut at the first quote or ended the object early: the getter
+  returned a truncated value, and the object depth counted the braces of a
+  string. The scan is now escape-aware and tracks the string state.
+- **The two validators share ONE implementation of the path rules.** The
+  drive/UNC/POSIX forms, the `.`/`..` collapse, the POSIX view of a Windows
+  drive (`/c/x`, `/mnt/c/x`, `/cygdrive/c/x`) and the scope containment lived
+  in two copies inside the two validators, and the copies had already drifted.
+  They now live in `scripts/_validators.awk` (`is_drive`, `is_unc`, `is_win`,
+  `is_abs`, `normpath`, `posix_to_win`, `covers`), and the UNC root keeps
+  `//host/share/` so `..` cannot climb out of the share.
+- **The closing gate counts a child only with a real session id.** Two
+  children sharing one `sessionID`, or a child with an empty one, are not two
+  children: the closing gate now says the same thing `validate_dag.sh` says,
+  instead of carrying a second, weaker definition of "integrated".
+
+### The command layer
+- **`--os` with an empty value is refused** instead of falling through to the
+  platform detection with an empty override.
+- **One existence probe.** The `wait-idle` and `verify-daughters` refusals
+  each carried their own copy of "does this session exist"; they now share
+  one helper that reads the id with the shared getter (a pretty-printed
+  answer is no longer "not found").
+- **The tabs prune refuses a malformed `tabs.json`** instead of replacing it
+  with an empty structure, and it flushes what it writes.
+- **The cleanup enumerates the project's sessions with the server's own
+  filter** instead of paging the whole catalog, and it **refuses to sweep an
+  incomplete catalog** when the pagination cap is reached with pages pending.
+- **`init-run` honours an explicit `[NN]` ordinal** in a worker title, above
+  the ordinals already deployed.
+
+### Fixed
+- **The installation instruction produced a skill the runtime cannot load.**
+  The README cloned the repository INTO the skills directory, which leaves
+  `SKILL.md` one level too deep; the instruction that installs the package's
+  `SKILL/` folder (renamed to the frontmatter `name`) is back, with the
+  "keep the clone and point the agent at it" alternative.
+- **The README's Quick Start contradicted the skill's own precondition**: the
+  two-level example now says that the prompt file carries the pre-registered
+  child rows (R16 omits them).
+- **The contribution contract and the repository tree were gone** from the
+  README: the CI contract, the closed-list rule, the evidence rule and the LF
+  requirement are back, and the tree lists `.gitattributes` and `.gitignore`.
+- **An ordinal with a leading zero broke the counter.** The shell's
+  arithmetic reads a leading zero as octal, and `09` is not an octal number:
+  in bash the next worker silently repeated the ordinal (two workers with the
+  same `[NN]`) and in dash the run died. The ordinals are decimal now.
+- **Dead code removed**: the unreachable reset branch of the shared route
+  helper and a cache key that nothing reads.
+
+### The regression net
+- **The validators had no fixture at all.** The suite never ran
+  `validate_dag.sh` nor `validate_ledger_closed.sh`, so a rewrite of the
+  closing gate passed every test. There is now a fixture that runs both
+  against the canonical Schema 3 ledger and against the broken ledgers each
+  validator exists to refuse.
+
+### Verified
+- Regression suite 38/38; the structural validator 7/7; the class sweep with
+  every rule proved by its own defect; the package build; and the skill
+  exercised live in a tmux session with opencode and the skill loaded (an
+  agent ran the readiness path end to end, with every script exiting 0 on the
+  first try).
 
 ## [1.7.0] - 2026-10-24
 
@@ -920,7 +986,8 @@ First public release of the OpenCode V2 two-level orchestration skill.
   references/ are flagged with `requiere verificación` (e.g. `--param`,
   `opencode ai --server`); the skill's default routes are HTTP-direct via
   the cached endpoint and Basic auth.
-[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.6...v1.6.0
 [1.5.6]: https://github.com/DragonJAR/OpenCode-Orchestrator-Skill/compare/v1.5.5...v1.5.6

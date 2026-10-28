@@ -267,7 +267,8 @@ json_get_field() {
   # cache-dir guard the reason a caller sources this file.
   [ -n "$_JSON_LIB" ] || { printf 'ERROR: shared awk library missing: %s/_json.awk (the caller must export SELF_DIR=<the scripts directory>)\n' "${SELF_DIR:-scripts}" >&2; exit 2; }
   awk -v key="$1" -v pre="${2:-}" "$_JSON_LIB"'
-    { json_field($0, key, pre); if (JSON_FOUND) { print JSON_VALUE; exit } }'
+    { buf = buf (NR > 1 ? " " : "") $0 }
+    END { json_field(buf, key, pre); if (JSON_FOUND) print JSON_VALUE }'
 }
 
 # --- kv cache -------------------------------------------------------------------
@@ -437,18 +438,18 @@ parse_kv() {
       --expected-parent) assert_value --expected-parent "$#"; EXPECTED_PARENT="${2:-}"; shift 2 ;; --expected-parent=*) EXPECTED_PARENT="${1#--expected-parent=}"; shift ;;
       --artifact) assert_value --artifact "$#"; ARTIFACT="${2:-}"; shift 2 ;; --artifact=*) ARTIFACT="${1#--artifact=}"; shift ;;
       --tui-cwd) assert_value --tui-cwd "$#"; TUI_CWD="${2:-}"; shift 2 ;; --tui-cwd=*) TUI_CWD="${1#--tui-cwd=}"; shift ;;
-      -d|--deadline) assert_value --deadline "$#"; DEADLINE="${2:-}"; shift 2 ;;
-      -i|--interval) assert_value --interval "$#"; INTERVAL="${2:-}"; shift 2 ;;
+      -d|--deadline) assert_value --deadline "$#"; DEADLINE="${2:-}"; shift 2 ;; --deadline=*) DEADLINE="${1#--deadline=}"; shift ;;
+      -i|--interval) assert_value --interval "$#"; INTERVAL="${2:-}"; shift 2 ;; --interval=*) INTERVAL="${1#--interval=}"; shift ;;
       -s) assert_value -s "$#"; SID="${2:-}"; shift 2 ;;
       -a) assert_value -a "$#"; ARTIFACT="${2:-}"; shift 2 ;;
-      --workers) assert_value --workers "$#"; _wt_add_list "${2:-}"; shift 2 ;;
-      --count) assert_value --count "$#"; COUNT="${2:-}"; shift 2 ;;
+      --workers) assert_value --workers "$#"; _wt_add_list "${2:-}"; shift 2 ;; --workers=*) _wt_add_list "${1#--workers=}"; shift ;;
+      --count) assert_value --count "$#"; COUNT="${2:-}"; shift 2 ;; --count=*) COUNT="${1#--count=}"; shift ;;
       --worker) assert_value --worker "$#"; _wt_add "${2:-}"; shift 2 ;;
       --worker=*) _wt_add "${1#--worker=}"; shift ;;
-      --prompt-file) assert_value --prompt-file "$#"; PROMPT_FILE="${2:-}"; shift 2 ;;
-      --router-prompt) assert_value --router-prompt "$#"; ROUTER_PROMPT="${2:-}"; shift 2 ;;
+      --prompt-file) assert_value --prompt-file "$#"; PROMPT_FILE="${2:-}"; shift 2 ;; --prompt-file=*) PROMPT_FILE="${1#--prompt-file=}"; shift ;;
+      --router-prompt) assert_value --router-prompt "$#"; ROUTER_PROMPT="${2:-}"; shift 2 ;; --router-prompt=*) ROUTER_PROMPT="${1#--router-prompt=}"; shift ;;
       --no-router) NO_ROUTER=1; shift ;;
-      --target) assert_value --target "$#"; WORKER="${2:-}"; shift 2 ;;
+      --target) assert_value --target "$#"; WORKER="${2:-}"; shift 2 ;; --target=*) WORKER="${1#--target=}"; shift ;;
       --auto-count) AUTO_COUNT=1; shift ;;
       --wait) WAIT=1; shift ;;
       --no-attach-tabs) NO_ATTACH=1; shift ;;
@@ -1062,13 +1063,24 @@ worker_list() {
       # The 00 ordinal is reserved for the orchestrator root. A worker cannot
       # take it, not even explicitly: init-run always creates the root, and two
       # [00] slots would make the run identity ambiguous.
-      if (ordtxt + 0 == orch + 0) { n = (n > 0 ? n : 1); ord = n; ordtxt = sprintf("%02d", n) }
+      if (ordtxt + 0 == orch + 0) { n += 1; ord = n; ordtxt = sprintf("%02d", n) }
       key = "[" ordtxt "] " line
       # Same criterion as find_dedup: the slug ignores the ordinal, so
       # "Vermithrax" and "[01] Vermithrax" are recognized as the same worker.
       if (seen[slug(key)]++) next
       print key
     }'
+}
+
+# session_exists_json JSON -> 0 when JSON carries a ses_* session id (DRY:
+# shared by wait-idle, verify-daughters and watch_run). Uses json_get_field
+# with the ses_ prefix so pretty-printed JSON or a preceding model.id never
+# misleads the check.
+session_exists_json() {
+  case "$(printf '%s' "${1:-}" | json_get_field id ses_)" in
+    ses_*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # --- session creation (shared by ensure-root and create-worker; DRY) -----------
@@ -1170,7 +1182,7 @@ post_new_session() {
   [ -n "$1" ] || die 'empty session body (bogus model pair? see the error above)'
   AUTH=$(auth_flag 2>/dev/null || printf '')
   RESP=$(http_post_json "$(cache_get endpoint)/api/session" "$1") || die 'POST /api/session failed'
-  ID=$(printf '%s' "$RESP" | json_get_field id)
+  ID=$(printf '%s' "$RESP" | json_get_field id ses_)
   # Validating the id was the missing piece: without this check a "ok" POST
   # whose response lacked an id printed an empty worker_id= as validated, and
   # the caller cached an empty root returning 0 (nonexistent session believed

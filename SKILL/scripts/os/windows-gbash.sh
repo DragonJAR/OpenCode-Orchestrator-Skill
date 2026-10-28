@@ -24,7 +24,7 @@ os_tabs_adapt_paths() {
   TABS_PATH="$1"; TABS_HELPER="$2"
   if command -v cygpath >/dev/null 2>&1; then
     TABS_PATH=$(cygpath -m "$TABS_PATH")
-    TABS_HELPER=$(cygpath -m "$TABS_HELPER")
+    [ -n "$TABS_HELPER" ] && TABS_HELPER=$(cygpath -m "$TABS_HELPER")
   fi
 }
 os_tabs_merge() {  # SID TITLE TUI_CWD BACKUP_DIR

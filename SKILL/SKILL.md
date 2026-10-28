@@ -5,7 +5,7 @@ license: MIT
 compatibility: "Operating OpenCode V2 requires authorized access to an instance; without access, limit the work to planning. Validators: POSIX sh + awk, scripts with LF line endings (Windows: Git Bash or WSL)."
 metadata:
   author: DragonJAR.org
-  skill_version: "1.7.0"
+  skill_version: "1.8.0"
   category: workflow-automation
   tags: [opencode, orchestration, subagent, dag, session-management, parallel-execution, permissions]
 ---
@@ -77,9 +77,9 @@ The scripts under `scripts/` automate steps 2-8 of the playbook (P2–P8). Invok
 | 8.1 | `orchestrate.sh delete-session --session SID [--yes] [--force]` | Single-session R7 delete: enumerates children, requires confirmation (or `--yes`); `--force` skips the children check. |
 | 8.2 | `orchestrate.sh clean [--orchestrator SID] [--yes] [--dry-run]` | Bulk cleanup: identify every session the orchestrator opened (direct children, all `[NN] Name` workers, and their transitive subagents), `DELETE` them, and prune `tabs.json`. Orchestrator auto-detected as the most recent `[00]` or as the run's own root, or pass `--orchestrator SID`. R7: requires `--yes`; cascade-by-default. `--dry-run` shows the plan. |
 
-Preconditions the table does not repeat: `init-run` needs `preflight`'s cache; `dispatch` needs a prompt file that already carries the registered child rows; `verify-daughters` needs the children's real `sessionID`s.
+Preconditions the table does not repeat: `init-run` needs `preflight`'s cache; in a two-level run (R3), `dispatch` sends a prompt file with the pre-registered child rows (omitted in readiness checks, R16); `verify-daughters` needs the children's real `sessionID`s.
 
-Manual fallback: call `opencode api` directly or use `curl` with Basic auth + service under state (see `recipe-tui-tabs.md`). The orchestrator is the only one that decides the route: no subcommand in the package invents `parentID`, exposes raw `DELETE` without an explicit `--yes`, or bypasses a gate.
+Manual fallback: call `opencode api` directly or use `curl` with Basic auth + service under state (see `recipe-tui-tabs.md`). The orchestrator decides the route: no subcommand invents `parentID`, exposes raw `DELETE` without `--yes`, or bypasses a gate.
 
 ## Activation Contract
 
@@ -202,7 +202,7 @@ esac
 ## Operation scripts
 
 - `scripts/preflight.sh [dir]` — a single POSIX command that emits endpoint, version, pid, `/openapi.json` guard, canonical directory and `projectID` of `dir`, agent catalogs by mode, default model pair (orchestrator profile), root session hint and the **tabs gate** (`tui_pids`, `tui_cwd`, `tui_cwd_match`, `tui_channel`, `tabs_json`, `tui_version`, `version_ok`, `gate`, `gate_reason`). It never prints credentials; without the CLI it falls back to the active registry under the state directory (`XDG_STATE_HOME`-aware). If `ORCHESTRATE_CACHE_DIR` is set, it persists state to files (`auth_password` chmod 600) and also the gate (`tabs_gate`, `tabs_cwd`, `tabs_channel`, `tui_version`, `tabs_reason`). Exit: `0` ok, `1` discovery failure (no environment error path; `set -u` traps misuse early).
-- `scripts/os/tui-detect.sh [project_dir] [pinned_version]` — no-effects subcommand delegated by `orchestrate.sh tabs`. Detects live TUI processes (excludes `opencode serve`), resolves their **real cwd** (not the server's), derives the storage channel without hardcoding it, normalizes the version (`v2.x` (e.g. `v2.0.21` → `2.0.21`, `v2.0.22` → `2.0.22`) and decides `gate=ready|blocked` with `gate_reason`. It creates or writes nothing; fails closed naming the unmet precondition.
+- `scripts/os/tui-detect.sh [project_dir] [pinned_version]` — no-effects subcommand delegated by `orchestrate.sh tabs`. Detects live TUI processes (excludes `opencode serve`), resolves their **real cwd** (not the server's), derives the storage channel without hardcoding it, normalizes the version (`v2.x`, e.g. `v2.0.21` → `2.0.21`, `v2.0.22` → `2.0.22`) and decides `gate=ready|blocked` with `gate_reason`. It creates or writes nothing; fails closed naming the unmet precondition.
 - `scripts/watch_run.sh -s SESSION_ID -a ARTIFACT_LIST[,...]` — bounded POSIX+awk watch (idle, outcome, artifacts, pending permissions) with a fixed deadline; ends when the artifacts exist with the session idle (`0`), on timeout (`3`) or usage/environment error (`2`). Uses the CLI's active service, like the run itself. It does not replace the [bounded read](references/api-and-sessions.md#bounded-result-reading): it is its artifact watcher.
 - `scripts/orchestrate.sh [--os OS] SUBCMD [args]` — **multi-OS Swiss Army knife**: every subcommand in the table above. `send-prompt` escapes JSON with awk (no python). Detects OS via `uname` (WSL via `/proc/version`); the `orchestrate-{darwin,linux,wsl,windows}.sh` wrappers force one. Per-OS details live in `scripts/os/`; nothing hardcoded: project, endpoint, model and agents resolve from the active state.
 

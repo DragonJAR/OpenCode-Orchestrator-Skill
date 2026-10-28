@@ -30,7 +30,7 @@
 # "msg_"), so `id` never picks up a different id. When the first occurrence
 # does not match, the next one is tried.
 
-function json_field(rest, key, pre,   k, i, p, v, q, j, c, d, n, x, e) {
+function json_field(rest, key, pre,   k, i, p, v, q, j, c, d, n, x, e, esc, inq) {
   JSON_VALUE = ""; JSON_FOUND = 0
   k = "\"" key "\""
   while ((i = index(rest, k)) > 0) {
@@ -44,14 +44,28 @@ function json_field(rest, key, pre,   k, i, p, v, q, j, c, d, n, x, e) {
     c = substr(v, 1, 1)
     if (c == "\"") {
       if (pre != "" && substr(v, 2, length(pre)) != pre) continue
-      q = substr(v, 2); j = index(q, "\"")
+      q = substr(v, 2)
+      esc = 0; j = 0
+      for (n = 1; n <= length(q); n++) {
+        x = substr(q, n, 1)
+        if (esc) { esc = 0; continue }
+        if (x == "\\") { esc = 1; continue }
+        if (x == "\"") { j = n; break }
+      }
       JSON_VALUE = (j > 0 ? substr(q, 1, j - 1) : q)
       JSON_FOUND = 1; return
     }
     if (c == "{" || c == "[") {
-      d = 0
+      d = 0; inq = 0; esc = 0
       for (n = 1; n <= length(v); n++) {
         x = substr(v, n, 1)
+        if (inq) {
+          if (esc) esc = 0
+          else if (x == "\\") esc = 1
+          else if (x == "\"") inq = 0
+          continue
+        }
+        if (x == "\"") { inq = 1; continue }
         if (x == c) d++
         else if (x == (c == "{" ? "}" : "]")) { d--; if (d == 0) { JSON_VALUE = substr(v, 1, n); JSON_FOUND = 1; return } }
       }
@@ -87,8 +101,9 @@ function json_route_label(meth, path) {
   return ""
 }
 
-# json_route_labels(RECORD) -> the labels a route record publishes, comma
-# separated. RECORD is one route of the paths object ("/api/x":{"get":{...}).
+# json_route_labels(RECORD) -> the cumulative labels published so far, comma
+# separated in canonical order. The accumulator lives in the awk process: the
+# caller feeds every route record of the document, in order.
 function json_route_labels(rec,   path, rest, meth, lbl, i, out) {
   path = rec
   sub(/":\{.*$/, "", path)

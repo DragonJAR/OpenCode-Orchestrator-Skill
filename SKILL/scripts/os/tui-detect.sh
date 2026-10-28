@@ -73,14 +73,20 @@ fi
 # 3) real cwd of each TUI. lsof on darwin/linux; /proc on linux/wsl.
 cwd_of() {  # $1=pid -> prints the cwd
   p=$1
+  _cwd=""
   if [ -r "/proc/$p/cwd" ]; then
-    readlink "/proc/$p/cwd" 2>/dev/null && return 0
+    _cwd=$(readlink "/proc/$p/cwd" 2>/dev/null) || _cwd=""
+  elif command -v lsof >/dev/null 2>&1; then
+    _cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   fi
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
-    return 0
-  fi
-  return 1
+  [ -n "$_cwd" ] || return 1
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cygpath >/dev/null 2>&1; then
+        _cwd=$(cygpath -w "$_cwd" 2>/dev/null || printf '%s' "$_cwd")
+      fi ;;
+  esac
+  printf '%s\n' "$_cwd"
 }
 
 TUI_CWD=""; TUI_CWD_ANY=""
